@@ -11,7 +11,7 @@ node_modules
 .output
 stats.html
 stats-*.json
-.wxt
+.wxt/
 web-ext.config.ts
 .env
 .env.*
