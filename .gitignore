@@ -29,10 +29,9 @@ web-ext.config.ts
 
 .bun
 
-# Native host builds
-native-host/
-native-host-swift/
-installer/
+# Native host build artifacts
+native-host-swift/.build/
+installer/build/
 
 # npm lock (using bun)
 package-lock.json
