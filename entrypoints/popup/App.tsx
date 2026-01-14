@@ -1,14 +1,21 @@
 import { useEffect, useState, type SVGProps } from 'react';
 import { useColorScheme } from '../../src/shared/hooks/useColorScheme';
-import { normalizeUrl, isHostInstalled, isHostConfigured } from '../../src/shared/storage';
+import { normalizeUrl, isHostInstalled, isHostConfigured, getFolders } from '../../src/shared/storage';
 import { MinimalClipEditor } from '../../src/shared/components/MinimalClipEditor';
 import { SetupView } from '../../src/shared/components/SetupView';
 import { DownloadHelperView } from '../../src/shared/components/DownloadHelperView';
 import { isValidWebUrl } from '../../src/shared/url';
 import { getCachedThread } from '../../src/shared/threadCache';
-import type { ClipThread } from '../../src/shared/storage';
+import type { ClipThread, Folder } from '../../src/shared/storage';
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '../../src/components/ui/tooltip';
-import { Loader2 } from 'lucide-react';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../../src/components/ui/select';
+import { Loader2, Folder as FolderIcon } from 'lucide-react';
 
 type AppState = 'loading' | 'not-installed' | 'setup' | 'ready' | 'error';
 
@@ -17,11 +24,16 @@ function PopupApp() {
   const [initialThread, setInitialThread] = useState<ClipThread | undefined>();
   const [error, setError] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [selectedFolder, setSelectedFolder] = useState<string>('Uncategorized');
 
   useEffect(() => {
     async function init() {
       try {
         setIsInitializing(true);
+
+        // Load folders in parallel with tab info
+        const foldersPromise = getFolders().catch(() => []);
 
         const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
@@ -40,9 +52,17 @@ function PopupApp() {
         }
 
         const normalized = normalizeUrl(activeTab.url);
-        const cached = await getCachedThread(normalized);
+        const [cached, loadedFolders] = await Promise.all([
+          getCachedThread(normalized),
+          foldersPromise,
+        ]);
         setUrl(normalized);
         setInitialThread(cached ?? undefined);
+        setFolders(loadedFolders);
+        // If there's a cached thread, use its folder as default
+        if (cached?.folder) {
+          setSelectedFolder(cached.folder);
+        }
         setError(null);
         setIsInitializing(false);
       } catch (err) {
@@ -140,14 +160,36 @@ function PopupApp() {
     );
   }
 
+  // Filter out Uncategorized from display list (it's the default)
+  const displayFolders = folders.filter((f) => f.name !== 'Uncategorized');
+
   return (
     <div className="flex w-[320px] flex-col gap-2 bg-background p-2">
+      {displayFolders.length > 0 && (
+        <Select value={selectedFolder} onValueChange={setSelectedFolder}>
+          <SelectTrigger className="h-8 text-xs">
+            <FolderIcon className="mr-2 h-3 w-3" />
+            <SelectValue placeholder="Save to folder..." />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="Uncategorized">
+              Uncategorized
+            </SelectItem>
+            {displayFolders.map((f) => (
+              <SelectItem key={f.name} value={f.name}>
+                {f.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
       <MinimalClipEditor
         url={url}
         initialThread={initialThread}
         showViewCommentsButton={true}
         showSidebarButton={false}
         onCommentAdded={handleSave}
+        defaultFolder={selectedFolder}
       />
     </div>
   );

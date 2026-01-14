@@ -1,7 +1,7 @@
 import { Download, ArrowRight } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 
-const DOWNLOAD_URL = 'https://github.com/alexanderjmontague/Jot/releases/latest/download/JotHelper.pkg';
+const DOWNLOAD_URL = 'https://github.com/alexanderjmontague/jot/releases/latest/download/JotHelper.pkg';
 
 interface DownloadHelperViewProps {
   onRetry?: () => void;

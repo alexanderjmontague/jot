@@ -5,10 +5,10 @@
  * markdown files in the user's Obsidian vault.
  */
 
-import type { ClipComment, ClipThread, ClipMetadata } from './types/clip';
+import type { ClipComment, ClipThread, ClipMetadata, Folder } from './types/clip';
 import { setCachedThread, clearCachedThread } from './threadCache';
 
-export type { ClipComment, ClipThread, ClipMetadata } from './types/clip';
+export type { ClipComment, ClipThread, ClipMetadata, Folder } from './types/clip';
 
 const NATIVE_HOST_NAME = 'com.jot.host';
 
@@ -217,7 +217,12 @@ export async function hasCommentsForUrl(url: string): Promise<boolean> {
   }
 }
 
-export async function appendComment(url: string, body: string, metadata?: ClipMetadata): Promise<ClipThread> {
+export async function appendComment(
+  url: string,
+  body: string,
+  metadata?: ClipMetadata,
+  folder?: string
+): Promise<ClipThread> {
   const trimmedBody = body.trim();
   if (!trimmedBody) throw new Error('Comment body cannot be empty');
 
@@ -234,6 +239,7 @@ export async function appendComment(url: string, body: string, metadata?: ClipMe
           previewImageUrl: metadata.previewImageUrl?.trim() || undefined,
         }
       : undefined,
+    folder: folder || '/',
   });
 
   void setCachedThread(normalized, thread);
@@ -291,4 +297,41 @@ export function subscribeToChanges(_callback: (threads: ClipThread[]) => void): 
   return () => {
     // No cleanup needed
   };
+}
+
+// ============================================================================
+// Folder Operations
+// ============================================================================
+
+export async function getFolders(): Promise<Folder[]> {
+  try {
+    const folders = await sendMessage<Folder[]>({ type: 'getFolders' });
+    return folders || [];
+  } catch (error) {
+    console.error('Failed to get folders', error);
+    return [];
+  }
+}
+
+export async function createFolder(path: string): Promise<Folder> {
+  return await sendMessage<Folder>({ type: 'createFolder', path });
+}
+
+export async function renameFolder(oldPath: string, newPath: string): Promise<Folder> {
+  return await sendMessage<Folder>({ type: 'renameFolder', oldPath, newPath });
+}
+
+export async function deleteFolder(path: string, recursive = false): Promise<void> {
+  await sendMessage({ type: 'deleteFolder', path, recursive });
+}
+
+export async function moveThread(url: string, toFolder: string): Promise<ClipThread> {
+  const normalized = normalizeUrl(url);
+  const thread = await sendMessage<ClipThread>({
+    type: 'moveThread',
+    url: normalized,
+    toFolder,
+  });
+  void setCachedThread(normalized, thread);
+  return thread;
 }

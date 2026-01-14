@@ -3,7 +3,7 @@
  * Uses GitHub Releases API to check for new versions.
  */
 
-const GITHUB_REPO = 'alexanderjmontague/Jot';
+const GITHUB_REPO = 'alexanderjmontague/jot';
 
 export async function getLatestVersion(): Promise<string | null> {
   try {

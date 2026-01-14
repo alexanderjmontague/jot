@@ -1,33 +1,8 @@
 #!/bin/bash
 
-# Prompt user for extension ID with instructions
-EXTENSION_ID=$(osascript -e 'text returned of (display dialog "Enter your Chrome extension ID for Jot.
-Jot Helper needs this to connect your local files to the extension.
-
-To find it:
-1. Open Chrome and go to chrome://extensions
-2. Enable \"Developer mode\" (toggle in top right)
-3. Find \"Jot\" and copy the ID
-   (looks like: omicjbpmfoppjopnogokibbgmdopdlgl)
-
-Paste your extension ID:" default answer "" buttons {"Cancel", "OK"} default button "OK")' 2>/dev/null)
-
-# Check if user cancelled
-if [ $? -ne 0 ] || [ -z "$EXTENSION_ID" ]; then
-    osascript -e 'display alert "Installation Cancelled" message "Jot Helper was not installed. Please re-run the installer and enter your extension ID."'
-    exit 1
-fi
-
-# Trim whitespace
-EXTENSION_ID=$(echo "$EXTENSION_ID" | tr -d '[:space:]')
-
-# Validate format (32 lowercase alphanumeric characters)
-if [[ ! "$EXTENSION_ID" =~ ^[a-z]{32}$ ]]; then
-    osascript -e 'display alert "Invalid Extension ID" message "The extension ID must be exactly 32 lowercase letters (a-z).
-
-Please re-run the installer with a valid extension ID from chrome://extensions."'
-    exit 1
-fi
+# Fixed extension ID (derived from the key in manifest.json)
+# This ID is the same across all Chromium browsers
+EXTENSION_ID="lgjhokmhniplbigjblidponoailcldhd"
 
 # Get the current user's home directory
 USER_HOME="$HOME"
@@ -35,21 +10,20 @@ if [ -z "$USER_HOME" ] || [ "$USER_HOME" = "/" ]; then
     USER_HOME=$(eval echo ~$USER)
 fi
 
-# Install locations (all in user's home - no admin needed)
+# Install locations
 JOT_DIR="$USER_HOME/Library/Application Support/Jot"
-CHROME_HOSTS_DIR="$USER_HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts"
 BINARY_PATH="$JOT_DIR/jot-host"
 
-# Create directories
+# Create Jot directory and copy binary
 mkdir -p "$JOT_DIR"
-mkdir -p "$CHROME_HOSTS_DIR"
-
-# Copy binary
 cp /tmp/jot-install/jot-host "$BINARY_PATH"
 chmod 755 "$BINARY_PATH"
 
-# Create manifest with user's extension ID
-cat > "$CHROME_HOSTS_DIR/com.jot.host.json" << MANIFEST
+# Create config directory
+mkdir -p "$USER_HOME/.jot"
+
+# Manifest content
+MANIFEST_CONTENT=$(cat << MANIFEST
 {
   "name": "com.jot.host",
   "description": "Jot native helper for saving clips to Obsidian",
@@ -60,11 +34,33 @@ cat > "$CHROME_HOSTS_DIR/com.jot.host.json" << MANIFEST
   ]
 }
 MANIFEST
+)
+
+# Install manifest for all Chromium browsers
+BROWSER_DIRS=(
+    "$USER_HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts"
+    "$USER_HOME/Library/Application Support/Google/Chrome Beta/NativeMessagingHosts"
+    "$USER_HOME/Library/Application Support/Google/Chrome Canary/NativeMessagingHosts"
+    "$USER_HOME/Library/Application Support/Microsoft Edge/NativeMessagingHosts"
+    "$USER_HOME/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts"
+    "$USER_HOME/Library/Application Support/Arc/User Data/NativeMessagingHosts"
+    "$USER_HOME/Library/Application Support/Chromium/NativeMessagingHosts"
+    "$USER_HOME/Library/Application Support/Vivaldi/NativeMessagingHosts"
+    "$USER_HOME/Library/Application Support/Opera Software/Opera Stable/NativeMessagingHosts"
+)
+
+for MANIFEST_DIR in "${BROWSER_DIRS[@]}"; do
+    PARENT_DIR="$(dirname "$MANIFEST_DIR")"
+    if [ -d "$PARENT_DIR" ]; then
+        mkdir -p "$MANIFEST_DIR"
+        echo "$MANIFEST_CONTENT" > "$MANIFEST_DIR/com.jot.host.json"
+    fi
+done
 
 # Cleanup temp files
 rm -rf /tmp/jot-install
 
 # Success message
-osascript -e 'display alert "Jot Helper Installed!" message "Installation complete. Return to the Jot extension and click \"I'\''ve installed it\" to continue."'
+osascript -e 'display alert "Jot Helper Installed!" message "Installation complete. Jot will now work in Chrome, Edge, Brave, Arc, and other Chromium browsers."'
 
 exit 0

@@ -13,11 +13,18 @@ export type ClipThread = {
   title?: string | null;
   faviconUrl?: string | null;
   previewImageUrl?: string | null;
+  folder: string; // Folder name, e.g., "Uncategorized", "Finance", "Tech"
 };
 
 export type ClipMetadata = {
   title?: string | null;
   faviconUrl?: string | null;
   previewImageUrl?: string | null;
+};
+
+export type Folder = {
+  name: string;       // The folder name, e.g., "Finance"
+  path: string;       // Same as name (for compatibility)
+  threadCount: number;
 };
 

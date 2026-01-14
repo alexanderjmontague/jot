@@ -23,6 +23,7 @@ type MinimalClipEditorProps = {
   isPopupPending?: boolean;
   onCommentAdded?: (thread: ClipThread) => void;
   onCommentDeleted?: (thread: ClipThread | undefined) => void;
+  defaultFolder?: string;
 };
 
 function HistoryIcon(props: SVGProps<SVGSVGElement>) {
@@ -733,6 +734,7 @@ export function MinimalClipEditor({
   isPopupPending = false,
   onCommentAdded,
   onCommentDeleted,
+  defaultFolder = '/',
 }: MinimalClipEditorProps) {
   const [thread, setThread] = useState<ClipThread | undefined>(initialThread ?? undefined);
   const [draft, setDraft] = useState('');
@@ -1048,7 +1050,7 @@ export function MinimalClipEditor({
       }
 
       const metadataPayload = Object.keys(metadata).length > 0 ? metadata : undefined;
-      const nextThread = await appendComment(url, trimmed, metadataPayload);
+      const nextThread = await appendComment(url, trimmed, metadataPayload, defaultFolder);
       setThread(nextThread);
       void setCachedThread(url, nextThread);
       setDraft('');

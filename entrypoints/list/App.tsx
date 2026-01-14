@@ -11,9 +11,22 @@ import {
   getAllThreads,
   isHostInstalled,
   isHostConfigured,
+  getFolders,
+  createFolder,
+  renameFolder as renameFolderApi,
+  deleteFolder as deleteFolderApi,
+  moveThread,
   type ClipThread,
+  type Folder,
 } from '../../src/shared/storage';
 import { SetupView } from '../../src/shared/components/SetupView';
+import { FolderSidebar } from '../../src/shared/components/FolderSidebar';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../../src/components/ui/dropdown-menu';
 import { DownloadHelperView } from '../../src/shared/components/DownloadHelperView';
 import { formatAbsolute, formatRelativeOrAbsolute } from '../../src/shared/datetime';
 import { formatDisplayUrl, stripWwwPrefix, getBaseDomainInfo } from '../../src/shared/url';
@@ -90,6 +103,25 @@ function TrashIcon(props: SVGProps<SVGSVGElement>) {
       <path d="M10 11v6" />
       <path d="M14 11v6" />
       <path d="M5 6v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6" />
+    </svg>
+  );
+}
+
+function FolderMoveIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      {...props}
+    >
+      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+      <path d="M12 10v6" />
+      <path d="m15 13-3 3-3-3" />
     </svg>
   );
 }
@@ -372,6 +404,69 @@ function ListApp() {
   const [previewFailures, setPreviewFailures] = useState<PreviewFailures>({});
   const [previewFits, setPreviewFits] = useState<PreviewFits>({});
 
+  // Folder state
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [selectedFolder, setSelectedFolder] = useState<string | null>(null); // null = "All"
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  // Load folders
+  useEffect(() => {
+    void getFolders().then(setFolders);
+  }, []);
+
+  // Reload folders when threads change (thread counts may have changed)
+  useEffect(() => {
+    void getFolders().then(setFolders);
+  }, [threads]);
+
+  const handleCreateFolder = useCallback(async (name: string) => {
+    await createFolder(name);
+    const updated = await getFolders();
+    setFolders(updated);
+  }, []);
+
+  const handleRenameFolder = useCallback(async (oldName: string, newName: string) => {
+    await renameFolderApi(oldName, newName);
+    const updated = await getFolders();
+    setFolders(updated);
+    // If the renamed folder was selected, update selection
+    if (selectedFolder === oldName) {
+      setSelectedFolder(newName);
+    }
+  }, [selectedFolder]);
+
+  const handleDeleteFolder = useCallback(async (name: string) => {
+    try {
+      await deleteFolderApi(name, false);
+      const updated = await getFolders();
+      setFolders(updated);
+      // If deleted folder was selected, go back to All
+      if (selectedFolder === name) {
+        setSelectedFolder(null);
+      }
+    } catch (err) {
+      const error = err as Error & { code?: string };
+      if (error.code === 'NOT_EMPTY') {
+        // Could show a confirmation dialog here
+        console.error('Folder not empty');
+      } else {
+        throw err;
+      }
+    }
+  }, [selectedFolder]);
+
+  const handleMoveThread = useCallback(async (url: string, toFolder: string) => {
+    try {
+      const updated = await moveThread(url, toFolder);
+      replaceThread(updated);
+      // Refresh folders to update counts
+      const updatedFolders = await getFolders();
+      setFolders(updatedFolders);
+    } catch (err) {
+      console.error('Failed to move thread', err);
+    }
+  }, [replaceThread]);
+
   const filters = useMemo(() => {
     const groups = new Map<string, { label: string; count: number }>();
 
@@ -407,16 +502,24 @@ function ListApp() {
     }
   }, [filters, activeFilterId]);
 
+  // Filter by folder first
+  const filteredByFolder = useMemo(() => {
+    if (selectedFolder === null) {
+      return threads; // "All" - show everything
+    }
+    return threads.filter((thread) => thread.folder === selectedFolder);
+  }, [threads, selectedFolder]);
+
   const filteredByDomain = useMemo(() => {
     if (activeFilterId === 'all') {
-      return threads;
+      return filteredByFolder;
     }
 
-    return threads.filter((thread) => {
+    return filteredByFolder.filter((thread) => {
       const base = getBaseDomainInfo(thread.url);
       return base?.key === activeFilterId;
     });
-  }, [threads, activeFilterId]);
+  }, [filteredByFolder, activeFilterId]);
 
   const displayThreads = useMemo(() => {
     const needle = searchTerm.trim().toLowerCase();
@@ -561,46 +664,63 @@ function ListApp() {
           </div>
         </nav>
 
-        {/* Filter navbar - only visible when there are domain filters */}
-        {filters.length > 1 && (
-          <nav className="flex w-full items-center gap-2 overflow-x-auto border-b border-border bg-background px-6 py-2">
-            {filters.map((option) => (
-              <Button
-                key={option.id}
-                type="button"
-                size="sm"
-                variant={option.id === activeFilterId ? 'secondary' : 'ghost'}
-                className="rounded-full"
-                aria-pressed={option.id === activeFilterId}
-                onClick={() => setActiveFilterId(option.id)}
-              >
-                <span className="whitespace-nowrap">{option.label}</span>
-                <span className="ml-1 text-xs text-muted-foreground/70">({option.count})</span>
-              </Button>
-            ))}
-          </nav>
-        )}
+        {/* Main content with sidebar */}
+        <div className="flex flex-1 overflow-hidden">
+          {/* Folder sidebar */}
+          <FolderSidebar
+            folders={folders}
+            selectedFolder={selectedFolder}
+            collapsed={sidebarCollapsed}
+            totalThreadCount={threads.length}
+            onSelectFolder={setSelectedFolder}
+            onCreateFolder={handleCreateFolder}
+            onRenameFolder={handleRenameFolder}
+            onDeleteFolder={handleDeleteFolder}
+            onToggleCollapsed={() => setSidebarCollapsed(!sidebarCollapsed)}
+          />
 
-        <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-4 px-2 py-4">
-          {loading ? <p className="text-sm text-muted-foreground">Loading comments...</p> : null}
+          {/* Main content */}
+          <div className="flex flex-1 flex-col overflow-hidden">
+            {/* Filter navbar - only visible when there are domain filters */}
+            {filters.length > 1 && (
+              <nav className="flex w-full items-center gap-2 overflow-x-auto border-b border-border bg-background px-6 py-2">
+                {filters.map((option) => (
+                  <Button
+                    key={option.id}
+                    type="button"
+                    size="sm"
+                    variant={option.id === activeFilterId ? 'secondary' : 'ghost'}
+                    className="rounded-full"
+                    aria-pressed={option.id === activeFilterId}
+                    onClick={() => setActiveFilterId(option.id)}
+                  >
+                    <span className="whitespace-nowrap">{option.label}</span>
+                    <span className="ml-1 text-xs text-muted-foreground/70">({option.count})</span>
+                  </Button>
+                ))}
+              </nav>
+            )}
 
-          <header className="flex flex-col gap-3 px-4 pt-4 pb-6">
-            <div className="flex w-full items-center gap-2 border-b border-border py-1 text-muted-foreground focus-within:border-primary transition-colors">
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-muted-foreground">
-                <path d="m21 21-4.34-4.34"/>
-                <circle cx="11" cy="11" r="8"/>
-              </svg>
-              <Input
-                placeholder="Search comments or URLs"
-                value={searchTerm}
-                onChange={(event) => setSearchTerm(event.target.value)}
-                className="w-full border-0 bg-transparent px-0 py-1 text-foreground focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
-              />
-            </div>
-          </header>
+            <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-4 px-2 py-4">
+              {loading ? <p className="text-sm text-muted-foreground">Loading comments...</p> : null}
 
-          <div className="flex flex-1 flex-col overflow-hidden px-4 pb-6">
-            <ScrollArea className="flex-1">
+              <header className="flex flex-col gap-3 px-4 pt-4 pb-6">
+                <div className="flex w-full items-center gap-2 border-b border-border py-1 text-muted-foreground focus-within:border-primary transition-colors">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-muted-foreground">
+                    <path d="m21 21-4.34-4.34"/>
+                    <circle cx="11" cy="11" r="8"/>
+                  </svg>
+                  <Input
+                    placeholder="Search comments or URLs"
+                    value={searchTerm}
+                    onChange={(event) => setSearchTerm(event.target.value)}
+                    className="w-full border-0 bg-transparent px-0 py-1 text-foreground focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
+                  />
+                </div>
+              </header>
+
+              <div className="flex flex-1 flex-col overflow-hidden px-4 pb-6">
+                <ScrollArea className="flex-1">
               {showEmptyState ? (
                 <div className="flex h-full min-h-[240px] flex-col items-center justify-center gap-2 rounded-lg px-6 py-16 text-center text-muted-foreground">
                   <h2 className="text-lg font-semibold text-muted-foreground">{emptyStateContent.title}</h2>
@@ -688,6 +808,40 @@ function ListApp() {
                                   {displayTitle}
                                 </div>
                               </div>
+                              {/* Move to folder dropdown */}
+                              {folders.length > 1 && (
+                                <DropdownMenu>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <DropdownMenuTrigger asChild>
+                                        <Button
+                                          variant="ghost"
+                                          size="icon"
+                                          className="h-8 w-8 shrink-0 text-muted-foreground"
+                                          aria-label="Move to folder"
+                                        >
+                                          <FolderMoveIcon className="size-4" />
+                                        </Button>
+                                      </DropdownMenuTrigger>
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                      <p>Move to folder</p>
+                                    </TooltipContent>
+                                  </Tooltip>
+                                  <DropdownMenuContent align="end">
+                                    {folders.map((folder) => (
+                                      <DropdownMenuItem
+                                        key={folder.name}
+                                        onClick={() => handleMoveThread(thread.url, folder.name)}
+                                        disabled={thread.folder === folder.name}
+                                      >
+                                        {folder.name}
+                                        {thread.folder === folder.name && ' (current)'}
+                                      </DropdownMenuItem>
+                                    ))}
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              )}
                               <Tooltip>
                                 <TooltipTrigger asChild>
                                   <Button
@@ -742,7 +896,9 @@ function ListApp() {
                   })}
                 </div>
               )}
-            </ScrollArea>
+              </ScrollArea>
+            </div>
+          </div>
           </div>
         </div>
       </div>
