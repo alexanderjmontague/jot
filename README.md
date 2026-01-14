@@ -20,37 +20,15 @@ Ever read something online and want to jot down a quick thought? Jot lets you do
 
 Your notes stay local. The extension talks directly to your filesystem through a tiny helper app (no servers, no sync, no BS).
 
-## Quick Start
+## Install
 
-### 1. Install the extension
+1. **Download** [`jot-extension.zip`](https://github.com/alexanderjmontague/jot/releases/latest/download/jot-extension.zip) and unzip it
+2. **Open Chrome** → go to `chrome://extensions` → enable **Developer mode**
+3. **Click "Load unpacked"** → select the `chrome-mv3` folder you just unzipped
+4. **Click the Jot icon** → follow prompts to install the helper app
+5. **Set your vault path** → done!
 
-```bash
-git clone https://github.com/alexanderjmontague/jot.git
-cd jot
-pnpm install && pnpm build
-```
-
-Then in Chrome (or any Chromium browser):
-- Go to `chrome://extensions`
-- Enable **Developer mode** (top right)
-- Click **Load unpacked** → select the `.output/chrome-mv3` folder
-
-### 2. Install the native helper
-
-This is what lets the extension read/write files on your machine. Requires Xcode (for Swift).
-
-```bash
-cd native-host-swift
-./install.sh
-```
-
-This auto-detects your installed browsers (Chrome, Arc, Brave, Edge, etc.) and sets up the helper for all of them.
-
-### 3. Point it at your vault
-
-Click the Jot icon in Chrome, paste your Obsidian vault path, done.
-
-Your comments will live in a `Jot/` folder inside your vault.
+Works with Chrome, Arc, Brave, Edge, and other Chromium browsers.
 
 ---
 
@@ -80,12 +58,23 @@ This is a really interesting point about...
 
 ## Development
 
+Want to build from source?
+
 ```bash
+git clone https://github.com/alexanderjmontague/jot.git
+cd jot
 pnpm install
-pnpm dev
+pnpm build
 ```
 
-Load the extension from `.output/chrome-mv3` in Chrome.
+Then load `.output/chrome-mv3` as an unpacked extension.
+
+For the native helper, you'll need Xcode:
+
+```bash
+cd native-host-swift
+./install.sh
+```
 
 ---
 
