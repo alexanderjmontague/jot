@@ -1,79 +1,105 @@
 # Jot
 
-A Chrome extension that saves comments on webpages as markdown files in your Obsidian vault.
+```
+     ╭──────────────────────────────╮
+     │  ✏️  jot it down, move on.   │
+     ╰──────────────────────────────╯
+```
 
-## Installation
+**Save thoughts on any webpage, straight to your Obsidian vault.**
 
-### Step 1: Install the Chrome Extension
+No cloud. No account. Just your browser and your notes.
 
-1. Clone this repo and run `npm install && npm run build`
-2. Open Chrome and go to `chrome://extensions`
-3. Enable **Developer mode** (toggle in top right)
-4. Click **Load unpacked** and select the `.output/chrome-mv3` folder
-5. Copy the **Extension ID** (shown under the extension name, looks like `abcdefghijklmnop...`)
+<!-- TODO: Add screenshot/gif here -->
 
-### Step 2: Install the Native Helper
+---
 
-The extension needs a small helper app to read/write files on your computer.
+## What is this?
+
+Ever read something online and want to jot down a quick thought? Jot lets you do exactly that — click the icon, type your comment, and it's saved as a markdown file in your Obsidian vault.
+
+Your notes stay local. The extension talks directly to your filesystem through a tiny helper app (no servers, no sync, no BS).
+
+## Quick Start
+
+### 1. Install the extension
+
+```bash
+git clone https://github.com/alexanderjmontague/Jot.git
+cd Jot
+pnpm install && pnpm build
+```
+
+Then in Chrome:
+- Go to `chrome://extensions`
+- Enable **Developer mode** (top right)
+- Click **Load unpacked** → select the `.output/chrome-mv3` folder
+- Copy the **Extension ID** (you'll need it next)
+
+### 2. Install the native helper
+
+This is what lets the extension read/write files on your machine.
 
 ```bash
 cd native-host
 ./install.sh
 ```
 
-When prompted, paste your Extension ID from Step 1.
+Paste your Extension ID when prompted.
 
-### Step 3: Configure Your Vault
+### 3. Point it at your vault
 
-1. Click the Jot icon in Chrome
-2. Paste the path to your Obsidian vault (e.g., `/Users/you/Documents/Obsidian/MyVault`)
-3. Click **Save & Continue**
+Click the Jot icon in Chrome, paste your Obsidian vault path, done.
 
-That's it! Your comments will be saved to a `Jot` folder inside your vault.
+Your comments will live in a `Jot/` folder inside your vault.
 
-## Usage
+---
 
-- **Save a comment**: Click the Jot icon on any webpage and type a comment
-- **View all comments**: Click the book icon in the popup, or go to the extension's options page
-- **Toolbar indicator**: The icon shows a dot when the current page has saved comments
-
-## How It Works
+## How it works
 
 ```
-Chrome Extension  <-->  Native Helper (Node.js)  <-->  Obsidian Vault
-                         ~/.jot/config.json           ~/Vault/Jot/*.md
+Chrome Extension  ←→  Native Helper  ←→  Obsidian Vault
+                      (local only)        ~/Vault/Jot/*.md
 ```
 
-Each comment is saved as a markdown file with YAML frontmatter:
+Each page you comment on gets its own markdown file:
 
 ```markdown
 ---
-url: "https://example.com/page"
-title: "Page Title"
+url: "https://example.com/article"
+title: "Some Article"
 created_at: 2025-01-10T14:30:00.000Z
 ---
 
 ## Comments
 
 ### 2025-01-10 14:30
-Your comment here.
+This is a really interesting point about...
 ```
+
+---
 
 ## Development
 
 ```bash
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 Load the extension from `.output/chrome-mv3` in Chrome.
 
+---
+
 ## Uninstall
 
-To remove the native helper:
+To fully remove the native helper:
 
 ```bash
 rm /usr/local/bin/jot-host
 rm ~/Library/Application\ Support/Google/Chrome/NativeMessagingHosts/com.jot.host.json
 rm -rf ~/.jot
 ```
+
+---
+
+**Made for people who think while they browse.**
