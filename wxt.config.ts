@@ -20,6 +20,9 @@ export default defineConfig((context) => {
     manifest: {
       name: 'Jot',
       description: 'Comment on webpages and save them to your Obsidian vault.',
+      // This key ensures a consistent extension ID across all Chromium browsers:
+      // lgjhokmhniplbigjblidponoailcldhd
+      key: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApxmhyoKnjzt78bh66yMmppQmI4XS0kMFiP/LGVL0C9NqROXDMfKob6aTnZl7YUQn+RgfEZq7DOvyi6micQigpycuDCNVYfMglvDc4I9akoDYMZVbkSQwh+S8g95RBw4x8Gi3JY3ue3N7lrYDkq8YdP5IIpxqRKe0dQjwcvyA1gIjIF5XEy/FQ3cdX1E3xjaEiAXvnYl8VGJ6fZvaWmgjV9Q4d3ACbfDTrryi/+8natHHZWt/CcV1M8bn+4o8kxPDvwTYg45Vk+mUtgxqAjfTqEjpFJY81iK+LEhyhvgy0hDnuF2RI0pghxW/zuXQLtlGmYARiJ74TCzdiH+ZFkfCbQIDAQAB',
       permissions: ['storage', 'activeTab', 'tabs', 'nativeMessaging', 'scripting'],
       host_permissions: ['<all_urls>'],
       icons: {

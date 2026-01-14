@@ -30,22 +30,21 @@ cd jot
 pnpm install && pnpm build
 ```
 
-Then in Chrome:
+Then in Chrome (or any Chromium browser):
 - Go to `chrome://extensions`
 - Enable **Developer mode** (top right)
 - Click **Load unpacked** → select the `.output/chrome-mv3` folder
-- Copy the **Extension ID** (you'll need it next)
 
 ### 2. Install the native helper
 
-This is what lets the extension read/write files on your machine.
+This is what lets the extension read/write files on your machine. Requires Xcode (for Swift).
 
 ```bash
-cd native-host
+cd native-host-swift
 ./install.sh
 ```
 
-Paste your Extension ID when prompted.
+This auto-detects your installed browsers (Chrome, Arc, Brave, Edge, etc.) and sets up the helper for all of them.
 
 ### 3. Point it at your vault
 
@@ -95,8 +94,16 @@ Load the extension from `.output/chrome-mv3` in Chrome.
 To fully remove the native helper:
 
 ```bash
-rm /usr/local/bin/jot-host
+# Remove the binary
+sudo rm /usr/local/bin/jot-host
+
+# Remove browser manifests (for whichever browsers you have)
 rm ~/Library/Application\ Support/Google/Chrome/NativeMessagingHosts/com.jot.host.json
+rm ~/Library/Application\ Support/Arc/User\ Data/NativeMessagingHosts/com.jot.host.json
+rm ~/Library/Application\ Support/BraveSoftware/Brave-Browser/NativeMessagingHosts/com.jot.host.json
+# ... etc for other browsers
+
+# Remove config
 rm -rf ~/.jot
 ```
 

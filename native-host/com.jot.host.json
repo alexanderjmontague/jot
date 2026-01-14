@@ -1,9 +1,0 @@
-{
-  "name": "com.jot.host",
-  "description": "Jot filesystem bridge for Obsidian vault integration",
-  "path": "/usr/local/bin/jot-host",
-  "type": "stdio",
-  "allowed_origins": [
-    "chrome-extension://EXTENSION_ID_PLACEHOLDER/"
-  ]
-}
