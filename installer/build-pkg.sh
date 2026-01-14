@@ -113,9 +113,9 @@ POSTINSTALL
 chmod +x "$SCRIPT_DIR/scripts/postinstall"
 echo "  Done."
 
-# Step 4: Build the .pkg
-echo "Step 4: Building .pkg..."
-PKG_FILE="$BUILD_DIR/JotHelper.pkg"
+# Step 4: Build the component .pkg
+echo "Step 4: Building component package..."
+COMPONENT_PKG="$BUILD_DIR/JotHelper-component.pkg"
 
 pkgbuild \
     --root "$PKG_ROOT" \
@@ -123,7 +123,22 @@ pkgbuild \
     --identifier "com.jot.host" \
     --version "$VERSION" \
     --install-location "/" \
+    "$COMPONENT_PKG"
+
+echo "  Done."
+
+# Step 5: Build the final installer with custom UI
+echo "Step 5: Building final installer with custom UI..."
+PKG_FILE="$BUILD_DIR/JotHelper.pkg"
+
+productbuild \
+    --distribution "$SCRIPT_DIR/Distribution.xml" \
+    --resources "$SCRIPT_DIR/Resources" \
+    --package-path "$BUILD_DIR" \
     "$PKG_FILE"
+
+# Clean up component package
+rm "$COMPONENT_PKG"
 
 echo ""
 echo "========================================="

@@ -76,11 +76,62 @@ function sendMessage<T>(request: Record<string, unknown>): Promise<T> {
 // URL Normalization
 // ============================================================================
 
+const TRACKING_PARAMS = new Set([
+  // Google Analytics / Ads / Search
+  'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+  'utm_id', 'utm_source_platform', 'utm_creative_format', 'utm_marketing_tactic',
+  'gclid', 'gclsrc', 'dclid', 'gbraid', 'wbraid',
+  'srsltid',  // Google Search Results Link Tracking ID
+  '_ga', '_gl',
+
+  // Facebook / Instagram
+  'fbclid', 'fb_action_ids', 'fb_action_types', 'fb_source', 'fb_ref',
+  'igsh', 'igshid',  // Instagram share tracking
+
+  // Microsoft / Bing
+  'msclkid',
+
+  // Twitter/X
+  'twclid',
+
+  // YouTube / Spotify
+  'si',  // Share tracking (YouTube, Spotify)
+  'feature',  // YouTube share feature param
+
+  // Generic tracking
+  'ref', 'source', 'campaign',
+  'mc_cid', 'mc_eid',  // Mailchimp
+  'oly_enc_id', 'oly_anon_id',  // Omeda
+  '_hsenc', '_hsmi', 'hsCtaTracking',  // HubSpot
+  'vero_id', 'vero_conv',  // Vero
+  'nr_email_referer',  // NewRelic
+  'mkt_tok',  // Marketo
+  'trk', 'trkInfo',  // LinkedIn
+]);
+
 export function normalizeUrl(url: string): string {
   try {
     const parsed = new URL(url);
     parsed.hash = '';
+
+    // Strip tracking parameters
+    for (const param of TRACKING_PARAMS) {
+      parsed.searchParams.delete(param);
+    }
+
+    // Sort remaining params for consistency
     parsed.searchParams.sort();
+
+    // Normalize www
+    if (parsed.hostname.startsWith('www.')) {
+      parsed.hostname = parsed.hostname.slice(4);
+    }
+
+    // Remove trailing slash from pathname (except root)
+    if (parsed.pathname.length > 1 && parsed.pathname.endsWith('/')) {
+      parsed.pathname = parsed.pathname.slice(0, -1);
+    }
+
     return parsed.toString();
   } catch (error) {
     console.error('Failed to normalize URL', error);
