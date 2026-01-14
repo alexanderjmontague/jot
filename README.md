@@ -25,8 +25,8 @@ Your notes stay local. The extension talks directly to your filesystem through a
 ### 1. Install the extension
 
 ```bash
-git clone https://github.com/alexanderjmontague/Jot.git
-cd Jot
+git clone https://github.com/alexanderjmontague/jot.git
+cd jot
 pnpm install && pnpm build
 ```
 
