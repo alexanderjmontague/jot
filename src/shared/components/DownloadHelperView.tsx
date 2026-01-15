@@ -15,7 +15,7 @@ export function DownloadHelperView({ onRetry }: DownloadHelperViewProps) {
   return (
     <div className="p-6 space-y-6 max-w-md mx-auto">
       <div className="text-center space-y-2">
-        <img src="/icon/128.png" alt="Jot" className="w-12 h-12 mb-2 mx-auto" />
+        <img src="/jot_logo.svg" alt="Jot" className="w-12 h-12 mb-2 mx-auto" />
         <h1 className="text-xl font-semibold">Install Jot Helper</h1>
         <p className="text-sm text-muted-foreground">
           Jot Helper is a tiny native app that lets Jot save comments to Obsidian or whatever local folder you specify.
