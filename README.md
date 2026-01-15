@@ -1,16 +1,14 @@
-# Jot
+<p align="center">
+  <img src="public/icon.svg" width="80" height="80" alt="Jot">
+</p>
 
-```
-     ╭──────────────────────────────╮
-     │  ✏️  jot it down, move on.   │
-     ╰──────────────────────────────╯
-```
+<h1 align="center">Jot</h1>
 
-**Save thoughts on any webpage, straight to your Obsidian vault.**
+<p align="center"><strong>Save thoughts on any webpage, straight to your Obsidian vault.</strong></p>
 
-No cloud. No account. Just your browser and your notes.
+<p align="center">No cloud. No account. Just your browser and your notes.</p>
 
-[**→ Download Latest Release**](https://github.com/alexanderjmontague/jot/releases/latest)
+<p align="center"><a href="https://github.com/alexanderjmontague/jot/releases/latest"><strong>→ Download Latest Release</strong></a></p>
 
 <!-- TODO: Add screenshot/gif here -->
 
