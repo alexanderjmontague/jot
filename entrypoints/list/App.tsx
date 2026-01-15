@@ -3,7 +3,6 @@ import { useColorScheme } from '../../src/shared/hooks/useColorScheme';
 import { Button } from '../../src/components/ui/button';
 import { Card, CardContent } from '../../src/components/ui/card';
 import { Input } from '../../src/components/ui/input';
-import { ScrollArea } from '../../src/components/ui/scroll-area';
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '../../src/components/ui/tooltip';
 import {
   deleteComment,
@@ -538,7 +537,7 @@ function ListApp() {
         count,
       }));
 
-    return [{ id: 'all', label: 'All', count: threads.length }, ...domainFilters];
+    return [{ id: 'all', label: 'All sites', count: threads.length }, ...domainFilters];
   }, [threads]);
 
   useEffect(() => {
@@ -674,20 +673,35 @@ function ListApp() {
 
   return (
     <TooltipProvider delayDuration={0}>
-      <div className="flex min-h-screen flex-col bg-muted/20">
-        {/* Full-width navbar */}
-        <nav className="flex w-full items-center justify-between gap-2 border-b border-border bg-background px-6 py-3">
-          <div className="flex items-center gap-2">
+      <div className="flex h-screen flex-col overflow-hidden bg-muted/20">
+        {/* Fixed top navbar */}
+        <nav className="shrink-0 flex w-full items-center gap-4 border-b border-border bg-background px-3 py-2">
+          <div className="flex items-center gap-2 shrink-0">
             <img
-              src="/thinking-bubble.png"
-              alt="Thinking bubble"
-              className="mt-0.5 select-none"
-              style={{ width: 28, height: 21.7 }}
+              src="/jot_logo.svg"
+              alt="Jot"
+              className="select-none"
+              style={{ width: 24, height: 24 }}
               draggable={false}
             />
-            <h1 className="text-xl font-semibold text-foreground">Comments</h1>
+            <h1 className="text-lg font-semibold text-foreground">Comments</h1>
           </div>
-          <div className="flex items-center gap-1">
+
+          {/* Search bar */}
+          <div className="flex flex-1 items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-1.5 text-muted-foreground focus-within:border-border focus-within:bg-muted/50 transition-colors">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-muted-foreground/60">
+              <path d="m21 21-4.34-4.34"/>
+              <circle cx="11" cy="11" r="8"/>
+            </svg>
+            <Input
+              placeholder="Search..."
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              className="h-auto w-full border-0 bg-transparent p-0 text-sm text-foreground placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
+            />
+          </div>
+
+          <div className="flex items-center gap-1 shrink-0">
             <SettingsDialog />
             <Tooltip>
               <TooltipTrigger asChild>
@@ -709,9 +723,9 @@ function ListApp() {
           </div>
         </nav>
 
-        {/* Main content with sidebar */}
-        <div className="flex flex-1 overflow-hidden">
-          {/* Folder sidebar */}
+        {/* Main content with fixed sidebar */}
+        <div className="flex flex-1 min-h-0">
+          {/* Fixed sidebar */}
           <FolderSidebar
             folders={folders}
             selectedFolder={selectedFolder}
@@ -728,11 +742,11 @@ function ListApp() {
             onReorderFolder={handleReorderFolder}
           />
 
-          {/* Main content */}
-          <div className="flex flex-1 flex-col overflow-hidden">
-            {/* Filter navbar - only visible when there are domain filters */}
+          {/* Main content area */}
+          <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
+            {/* Fixed filter navbar - only visible when there are domain filters */}
             {filters.length > 1 && (
-              <nav className="flex w-full items-center gap-2 overflow-x-auto border-b border-border bg-background px-6 py-2">
+              <nav className="shrink-0 flex w-full items-center gap-2 overflow-x-auto border-b border-border bg-background px-3 py-2">
                 {filters.map((option) => (
                   <Button
                     key={option.id}
@@ -750,26 +764,12 @@ function ListApp() {
               </nav>
             )}
 
-            <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-4 px-2 py-4">
-              {loading ? <p className="text-sm text-muted-foreground">Loading comments...</p> : null}
+            {/* Scrollable content */}
+            <div className="flex-1 min-h-0 overflow-auto">
+              <div className="mx-auto w-full max-w-4xl px-4 py-6">
+                {loading ? <p className="text-sm text-muted-foreground">Loading comments...</p> : null}
 
-              <header className="flex flex-col gap-3 px-4 pt-4 pb-6">
-                <div className="flex w-full items-center gap-2 border-b border-border py-1 text-muted-foreground focus-within:border-primary transition-colors">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-muted-foreground">
-                    <path d="m21 21-4.34-4.34"/>
-                    <circle cx="11" cy="11" r="8"/>
-                  </svg>
-                  <Input
-                    placeholder="Search comments or URLs"
-                    value={searchTerm}
-                    onChange={(event) => setSearchTerm(event.target.value)}
-                    className="w-full border-0 bg-transparent px-0 py-1 text-foreground focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
-                  />
-                </div>
-              </header>
-
-              <div className="flex flex-1 flex-col overflow-hidden px-4 pb-6">
-                <ScrollArea className="flex-1">
+                <div className="pb-6">
               {showEmptyState ? (
                 <div className="flex h-full min-h-[240px] flex-col items-center justify-center gap-2 rounded-lg px-6 py-16 text-center text-muted-foreground">
                   <h2 className="text-lg font-semibold text-muted-foreground">{emptyStateContent.title}</h2>
@@ -945,9 +945,9 @@ function ListApp() {
                   })}
                 </div>
               )}
-              </ScrollArea>
+                </div>
+              </div>
             </div>
-          </div>
           </div>
         </div>
       </div>

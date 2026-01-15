@@ -302,8 +302,10 @@ function SortableFolderItem({
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
-    paddingLeft: `${12 + depth * 16}px`,
   };
+
+  // Subtle indentation: 10px per nesting level, only for nested items
+  const indentStyle = depth > 0 ? { marginLeft: `${depth * 10}px` } : {};
 
   return (
     <div
@@ -324,19 +326,20 @@ function SortableFolderItem({
 
       <button
         type="button"
-        className={`group relative flex w-full items-center gap-2 rounded-lg px-2 py-2 text-sm cursor-pointer transition-colors ${
+        style={indentStyle}
+        className={`group relative flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm cursor-pointer transition-colors ${
           isSelected
-            ? 'bg-accent text-accent-foreground'
+            ? 'bg-muted text-foreground'
             : 'text-foreground/80 hover:bg-accent/40 hover:text-foreground'
         }`}
         onClick={onSelect}
         {...listeners}
       >
-        {/* Expand/collapse chevron */}
-        {hasChildren ? (
+        {/* Expand/collapse chevron - only show if has children */}
+        {hasChildren && (
           <button
             type="button"
-            className="p-0.5 -ml-1 rounded hover:bg-accent/60 transition-colors"
+            className="p-0.5 -ml-1.5 -mr-1.5 rounded hover:bg-accent/60 transition-colors"
             onClick={(e) => {
               e.stopPropagation();
               onToggleExpand();
@@ -346,8 +349,6 @@ function SortableFolderItem({
               className={`h-3 w-3 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
             />
           </button>
-        ) : (
-          <span className="w-4" />
         )}
 
         {isSelected ? (
@@ -359,8 +360,8 @@ function SortableFolderItem({
         <span className="flex-1 truncate text-left">{folder.name}</span>
 
         <span
-          className={`text-xs tabular-nums transition-opacity ${
-            isSelected ? 'text-accent-foreground/70' : 'text-muted-foreground group-hover:opacity-0'
+          className={`text-xs tabular-nums transition-opacity group-hover:opacity-0 ${
+            isSelected ? 'text-foreground/70' : 'text-muted-foreground'
           }`}
         >
           {folder.threadCount}
@@ -372,10 +373,8 @@ function SortableFolderItem({
             <div
               role="button"
               tabIndex={0}
-              className={`absolute right-2 p-1 rounded-md transition-opacity ${
-                isSelected
-                  ? 'opacity-50 hover:opacity-100 hover:bg-accent-foreground/10'
-                  : 'opacity-0 group-hover:opacity-50 hover:!opacity-100 hover:bg-accent/60'
+              className={`absolute right-2 p-1 rounded-md transition-opacity opacity-0 group-hover:opacity-50 hover:!opacity-100 ${
+                isSelected ? 'hover:bg-accent-foreground/10' : 'hover:bg-accent/60'
               }`}
               onClick={(e) => e.stopPropagation()}
               onKeyDown={(e) => {
@@ -509,14 +508,19 @@ export function FolderSidebar({
     const overId = over.id as string;
     setOverId(overId);
 
-    // Calculate drop position based on Y offset
+    // Get the current translated position of the dragged element
+    const activeRect = active.rect.current.translated;
     const overRect = over.rect;
-    const mouseY = (event.activatorEvent as MouseEvent)?.clientY ?? 0;
 
-    if (overRect) {
-      const offsetY = mouseY - overRect.top;
-      const height = overRect.height;
-      const ratio = offsetY / height;
+    if (activeRect && overRect) {
+      // Use the center of the dragged element to determine position
+      const activeCenterY = activeRect.top + activeRect.height / 2;
+      const overTop = overRect.top;
+      const overHeight = overRect.height;
+
+      // Calculate where the active center is relative to the over element
+      const relativeY = activeCenterY - overTop;
+      const ratio = relativeY / overHeight;
 
       const activeFolder = findFolderById(folders, active.id as string);
       const overFolder = findFolderById(folders, overId);
@@ -537,40 +541,49 @@ export function FolderSidebar({
         return;
       }
 
-      if (ratio < 0.25) {
+      if (ratio < 0.3) {
         setDropPosition('before');
-      } else if (ratio > 0.75) {
+      } else if (ratio > 0.7) {
         setDropPosition('after');
       } else if (canNestInside) {
         setDropPosition('inside');
       } else {
-        setDropPosition('after');
+        // If can't nest, pick closest edge
+        setDropPosition(ratio < 0.5 ? 'before' : 'after');
       }
     }
   };
 
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
+
+    // Capture drop position before clearing state
+    const finalDropPosition = dropPosition;
+
     setActiveId(null);
     setOverId(null);
     setDropPosition(null);
 
-    if (!over || active.id === over.id) return;
+    if (!over || active.id === over.id || !finalDropPosition) return;
 
     const activeId = active.id as string;
     const targetId = over.id as string;
 
-    if (dropPosition === 'inside') {
-      // Nest inside target folder
-      await onNestFolder(activeId, targetId);
-    } else if (dropPosition === 'before') {
-      // Move to root and place before target
-      await onNestFolder(activeId, null);
-      await onReorderFolder(activeId, targetId, undefined);
-    } else if (dropPosition === 'after') {
-      // Move to root and place after target
-      await onNestFolder(activeId, null);
-      await onReorderFolder(activeId, undefined, targetId);
+    try {
+      if (finalDropPosition === 'inside') {
+        // Nest inside target folder
+        await onNestFolder(activeId, targetId);
+      } else if (finalDropPosition === 'before') {
+        // Move to root and place before target
+        await onNestFolder(activeId, null);
+        await onReorderFolder(activeId, targetId, undefined);
+      } else if (finalDropPosition === 'after') {
+        // Move to root and place after target
+        await onNestFolder(activeId, null);
+        await onReorderFolder(activeId, undefined, targetId);
+      }
+    } catch (err) {
+      console.error('Failed to move folder:', err);
     }
   };
 
@@ -658,7 +671,7 @@ export function FolderSidebar({
             type="button"
             className={`group relative flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm cursor-pointer transition-colors ${
               selectedFolder === null
-                ? 'bg-accent text-accent-foreground'
+                ? 'bg-muted text-foreground'
                 : 'text-foreground/80 hover:bg-accent/40 hover:text-foreground'
             }`}
             onClick={() => onSelectFolder(null)}
@@ -668,10 +681,10 @@ export function FolderSidebar({
                 selectedFolder === null ? 'text-foreground' : 'text-muted-foreground group-hover:text-foreground/70'
               }`}
             />
-            <span className="flex-1 truncate text-left font-medium">All Clips</span>
+            <span className="flex-1 truncate text-left font-medium">All</span>
             <span
               className={`text-xs tabular-nums transition-colors ${
-                selectedFolder === null ? 'text-accent-foreground/70' : 'text-muted-foreground'
+                selectedFolder === null ? 'text-foreground/70' : 'text-muted-foreground'
               }`}
             >
               {totalThreadCount}
@@ -684,7 +697,7 @@ export function FolderSidebar({
               type="button"
               className={`group relative flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm cursor-pointer transition-colors ${
                 selectedFolder === 'Uncategorized'
-                  ? 'bg-accent text-accent-foreground'
+                  ? 'bg-muted text-foreground'
                   : 'text-foreground/80 hover:bg-accent/40 hover:text-foreground'
               }`}
               onClick={() => onSelectFolder('Uncategorized')}
@@ -699,7 +712,7 @@ export function FolderSidebar({
               <span className="flex-1 truncate text-left">Unsorted</span>
               <span
                 className={`text-xs tabular-nums transition-colors ${
-                  selectedFolder === 'Uncategorized' ? 'text-accent-foreground/70' : 'text-muted-foreground'
+                  selectedFolder === 'Uncategorized' ? 'text-foreground/70' : 'text-muted-foreground'
                 }`}
               >
                 {uncategorizedFolder.threadCount}
