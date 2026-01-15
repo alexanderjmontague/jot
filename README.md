@@ -22,11 +22,7 @@ Your notes stay local. The extension talks directly to your filesystem through a
 
 ## Install
 
-1. **Download** [`jot-extension.zip`](https://github.com/alexanderjmontague/jot/releases/latest/download/jot-extension.zip) and unzip it
-2. **Open Chrome** → go to `chrome://extensions` → enable **Developer mode**
-3. **Click "Load unpacked"** → select the `chrome-mv3` folder you just unzipped
-4. **Click the Jot icon** → follow prompts to install the helper app
-5. **Set your vault path** → done!
+Download [`jot-extension.zip`](https://github.com/alexanderjmontague/jot/releases/latest/download/jot-extension.zip), unzip it, and load it in Chrome using [Developer mode](https://developer.chrome.com/docs/extensions/get-started/tutorial/hello-world#load-unpacked). Then follow the setup instructions in the extension.
 
 Works with Chrome, Arc, Brave, Edge, and other Chromium browsers.
 
