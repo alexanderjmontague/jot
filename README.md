@@ -4,9 +4,9 @@
 
 <h1 align="center">Jot</h1>
 
-<p align="center"><strong>Save thoughts on any webpage, straight to your Obsidian vault.</strong></p>
+<p align="center"><strong>Leave notes on any webpage.</strong></p>
 
-<p align="center">No cloud. No account. Just your browser and your notes.</p>
+<p align="center">Modern bookmarks for you and Claude Code</p>
 
 <p align="center"><a href="https://github.com/alexanderjmontague/jot/releases/latest"><strong>→ Download Latest Release</strong></a></p>
 
