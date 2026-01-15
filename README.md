@@ -10,6 +10,8 @@
 
 No cloud. No account. Just your browser and your notes.
 
+[**→ Download Latest Release**](https://github.com/alexanderjmontague/jot/releases/latest)
+
 <!-- TODO: Add screenshot/gif here -->
 
 ---
