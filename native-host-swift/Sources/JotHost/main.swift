@@ -103,11 +103,37 @@ struct ParsedEntry {
 
 struct ParsedFolder {
     var name: String
+    var level: Int  // 1, 2, or 3
     var entries: [ParsedEntry]
+    var children: [ParsedFolder]
+
+    init(name: String, level: Int = 1, entries: [ParsedEntry] = [], children: [ParsedFolder] = []) {
+        self.name = name
+        self.level = level
+        self.entries = entries
+        self.children = children
+    }
+
+    // Generate unique ID based on path
+    func id(parentPath: String? = nil) -> String {
+        let base = name.lowercased().replacingOccurrences(of: " ", with: "-")
+        if let parent = parentPath {
+            return "\(parent)/\(base)"
+        }
+        return base
+    }
+
+    // Get full path for display
+    func path(parentPath: String? = nil) -> String {
+        if let parent = parentPath {
+            return "\(parent)/\(name)"
+        }
+        return name
+    }
 }
 
 struct ParsedDocument {
-    var folders: [ParsedFolder]
+    var folders: [ParsedFolder]  // Root-level folders (level 1)
 }
 
 // MARK: - Message Types
@@ -127,6 +153,11 @@ struct Request: Codable {
     var newPath: String?      // For renameFolder (new name)
     var toFolder: String?     // For moveThread (destination folder name)
     var recursive: Bool?      // For deleteFolder
+    var parentId: String?     // For createFolder (parent folder ID for nesting)
+    var folderId: String?     // For reorderFolder/nestFolder (folder to move)
+    var targetParentId: String?  // For nestFolder (folder to nest into, null for root)
+    var beforeId: String?     // For reorderFolder (place before this folder)
+    var afterId: String?      // For reorderFolder (place after this folder)
 }
 
 struct Response: Encodable {
@@ -204,39 +235,84 @@ func parseDate(_ dateStr: String) -> Int64? {
 // MARK: - Markdown Parsing
 
 func parseBookmarksMarkdown(_ content: String) -> ParsedDocument {
-    var folders: [ParsedFolder] = []
-    var currentFolder: ParsedFolder? = nil
+    var rootFolders: [ParsedFolder] = []
+    var currentL1: ParsedFolder? = nil
+    var currentL2: ParsedFolder? = nil
+    var currentL3: ParsedFolder? = nil
     var currentEntry: ParsedEntry? = nil
 
     let lines = content.components(separatedBy: "\n")
 
-    for line in lines {
-        // Check for folder header (## Header)
-        if line.hasPrefix("## ") {
-            // Save current entry to current folder
-            if var entry = currentEntry, var folder = currentFolder {
-                folder.entries.append(entry)
-                currentFolder = folder
-            }
-            currentEntry = nil
+    // Helper to save current entry to the deepest active folder
+    func saveCurrentEntry() {
+        guard let entry = currentEntry else { return }
+        if currentL3 != nil {
+            currentL3!.entries.append(entry)
+        } else if currentL2 != nil {
+            currentL2!.entries.append(entry)
+        } else if currentL1 != nil {
+            currentL1!.entries.append(entry)
+        }
+        currentEntry = nil
+    }
 
-            // Save current folder
-            if let folder = currentFolder {
-                folders.append(folder)
-            }
+    // Helper to finalize L3 into L2
+    func finalizeL3() {
+        guard let l3 = currentL3 else { return }
+        currentL2?.children.append(l3)
+        currentL3 = nil
+    }
+
+    // Helper to finalize L2 into L1
+    func finalizeL2() {
+        finalizeL3()
+        guard let l2 = currentL2 else { return }
+        currentL1?.children.append(l2)
+        currentL2 = nil
+    }
+
+    // Helper to finalize L1 into root
+    func finalizeL1() {
+        finalizeL2()
+        guard let l1 = currentL1 else { return }
+        rootFolders.append(l1)
+        currentL1 = nil
+    }
+
+    for line in lines {
+        // Check for level 1 header: ## Header (but not ### or ####)
+        if line.hasPrefix("## ") && !line.hasPrefix("### ") {
+            saveCurrentEntry()
+            finalizeL1()
 
             let folderName = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces)
-            currentFolder = ParsedFolder(name: folderName, entries: [])
+            currentL1 = ParsedFolder(name: folderName, level: 1)
+            continue
+        }
+
+        // Check for level 2 header: ### Header (but not ####)
+        if line.hasPrefix("### ") && !line.hasPrefix("#### ") {
+            saveCurrentEntry()
+            finalizeL2()
+
+            let folderName = String(line.dropFirst(4)).trimmingCharacters(in: .whitespaces)
+            currentL2 = ParsedFolder(name: folderName, level: 2)
+            continue
+        }
+
+        // Check for level 3 header: #### Header
+        if line.hasPrefix("#### ") {
+            saveCurrentEntry()
+            finalizeL3()
+
+            let folderName = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+            currentL3 = ParsedFolder(name: folderName, level: 3)
             continue
         }
 
         // Check for entry line: - **[Title](url)** — Date
         if line.hasPrefix("- **[") {
-            // Save previous entry
-            if var entry = currentEntry, var folder = currentFolder {
-                folder.entries.append(entry)
-                currentFolder = folder
-            }
+            saveCurrentEntry()
 
             // Parse: - **[Title](url)** — Date
             let pattern = #"^- \*\*\[(.+?)\]\((.+?)\)\*\* — (.+)$"#
@@ -264,16 +340,11 @@ func parseBookmarksMarkdown(_ content: String) -> ParsedDocument {
         }
     }
 
-    // Save final entry and folder
-    if var entry = currentEntry, var folder = currentFolder {
-        folder.entries.append(entry)
-        currentFolder = folder
-    }
-    if let folder = currentFolder {
-        folders.append(folder)
-    }
+    // Save remaining entries and finalize all folders
+    saveCurrentEntry()
+    finalizeL1()
 
-    return ParsedDocument(folders: folders)
+    return ParsedDocument(folders: rootFolders)
 }
 
 // MARK: - Markdown Serialization
@@ -281,9 +352,12 @@ func parseBookmarksMarkdown(_ content: String) -> ParsedDocument {
 func serializeBookmarksMarkdown(_ doc: ParsedDocument) -> String {
     var lines: [String] = ["# My Web Clips", ""]
 
-    for folder in doc.folders {
-        lines.append("## \(folder.name)")
+    func writeFolder(_ folder: ParsedFolder, level: Int) {
+        // Write heading with correct number of #s (level 1 = ##, level 2 = ###, level 3 = ####)
+        let prefix = String(repeating: "#", count: level + 1)
+        lines.append("\(prefix) \(folder.name)")
 
+        // Write entries
         for entry in folder.entries {
             lines.append("- **[\(entry.title)](\(entry.url))** — \(entry.date)")
             for comment in entry.comments {
@@ -291,7 +365,16 @@ func serializeBookmarksMarkdown(_ doc: ParsedDocument) -> String {
             }
         }
 
+        // Write children recursively
+        for child in folder.children {
+            writeFolder(child, level: level + 1)
+        }
+
         lines.append("")
+    }
+
+    for folder in doc.folders {
+        writeFolder(folder, level: 1)
     }
 
     return lines.joined(separator: "\n")
@@ -563,12 +646,33 @@ func handleSetConfig(vaultPath: String?, commentFolder: String?) -> Response {
         return Response(id: 0, ok: false, data: nil, error: "vaultPath is required", code: "INVALID_INPUT")
     }
 
+    // Security: Reject path traversal attempts
+    guard !vaultPath.contains("..") else {
+        return Response(id: 0, ok: false, data: nil, error: "Path cannot contain '..'", code: "INVALID_PATH")
+    }
+
+    // Security: Resolve symlinks and normalize path
+    let resolvedURL = URL(fileURLWithPath: vaultPath).standardized.resolvingSymlinksInPath()
+    let resolvedPath = resolvedURL.path
+
+    // Security: Require vault to be within user's home directory
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    guard resolvedPath.hasPrefix(home) else {
+        return Response(id: 0, ok: false, data: nil, error: "Vault must be within home directory", code: "INVALID_PATH")
+    }
+
     var isDir: ObjCBool = false
-    guard FileManager.default.fileExists(atPath: vaultPath, isDirectory: &isDir), isDir.boolValue else {
+    guard FileManager.default.fileExists(atPath: resolvedPath, isDirectory: &isDir), isDir.boolValue else {
         return Response(id: 0, ok: false, data: nil, error: "Vault path does not exist", code: "PATH_NOT_FOUND")
     }
 
-    let config = Config(vaultPath: vaultPath, commentFolder: commentFolder ?? "Jot")
+    // Security: Validate commentFolder to prevent path traversal
+    let folder = commentFolder ?? "Jot"
+    guard isValidFolderName(folder) else {
+        return Response(id: 0, ok: false, data: nil, error: "Invalid folder name (use only letters, numbers, spaces, hyphens, underscores)", code: "INVALID_INPUT")
+    }
+
+    let config = Config(vaultPath: vaultPath, commentFolder: folder)
 
     do {
         try Config.write(config)
@@ -648,6 +752,12 @@ func handleGetAllThreads() -> Response {
 func handleAppendComment(url: String?, body: String?, metadata: ClipMetadata?, folder: String?) -> Response {
     guard let url = url, let body = body, !body.isEmpty, let config = Config.read() else {
         return Response(id: 0, ok: false, data: nil, error: "url and body are required", code: "INVALID_INPUT")
+    }
+
+    // Security: Limit comment length to prevent resource exhaustion
+    let maxCommentLength = 50_000  // 50KB
+    guard body.count <= maxCommentLength else {
+        return Response(id: 0, ok: false, data: nil, error: "Comment exceeds maximum length of \(maxCommentLength) characters", code: "BODY_TOO_LONG")
     }
 
     let normalized = normalizeUrl(url)
@@ -786,6 +896,31 @@ func handleDeleteThread(url: String?) -> Response {
 
 // MARK: - Folder Operations
 
+// Helper to count total entries in a folder (including all descendants)
+func countTotalEntries(_ folder: ParsedFolder) -> Int {
+    return folder.entries.count + folder.children.reduce(0) { $0 + countTotalEntries($1) }
+}
+
+// Helper to convert ParsedFolder to response dictionary
+func folderToDict(_ folder: ParsedFolder, parentPath: String? = nil) -> [String: Any] {
+    let id = folder.id(parentPath: parentPath)
+    let path = folder.path(parentPath: parentPath)
+
+    let children: [[String: Any]] = folder.children.map { child in
+        folderToDict(child, parentPath: path)
+    }
+
+    return [
+        "id": id,
+        "name": folder.name,
+        "path": path,
+        "level": folder.level,
+        "parentId": parentPath != nil ? parentPath!.lowercased().replacingOccurrences(of: " ", with: "-") : NSNull(),
+        "threadCount": folder.entries.count,
+        "children": children
+    ]
+}
+
 func handleGetFolders() -> Response {
     guard let config = Config.read() else {
         return Response(id: 0, ok: true, data: AnyCodable([Any]()), error: nil, code: nil)
@@ -794,40 +929,78 @@ func handleGetFolders() -> Response {
     let doc = readDocument(config: config)
 
     let folders: [[String: Any]] = doc.folders.map { folder in
-        [
-            "name": folder.name,
-            "path": folder.name,  // For compatibility
-            "threadCount": folder.entries.count
-        ]
+        folderToDict(folder, parentPath: nil)
     }
 
     return Response(id: 0, ok: true, data: AnyCodable(folders), error: nil, code: nil)
 }
 
-func handleCreateFolder(path: String?) -> Response {
+// Security: Validate folder names to prevent injection/traversal
+func isValidFolderName(_ name: String) -> Bool {
+    // Length limit
+    guard name.count <= 100 else { return false }
+
+    // Allow: alphanumeric, spaces, hyphens, underscores
+    let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " -_"))
+    guard name.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return false }
+
+    // Reject path traversal attempts and special names
+    guard !name.contains("..") && name != "." else { return false }
+
+    // Reject leading/trailing whitespace
+    guard name == name.trimmingCharacters(in: .whitespaces) else { return false }
+
+    return true
+}
+
+func handleCreateFolder(path: String?, parentId: String?) -> Response {
     guard let name = path, !name.isEmpty, let config = Config.read() else {
         return Response(id: 0, ok: false, data: nil, error: "Folder name is required", code: "INVALID_INPUT")
     }
 
-    var doc = readDocument(config: config)
-
-    // Check if folder already exists
-    if doc.folders.contains(where: { $0.name == name }) {
-        return Response(id: 0, ok: false, data: nil, error: "Folder already exists", code: "ALREADY_EXISTS")
+    // Security: Validate folder name
+    guard isValidFolderName(name) else {
+        return Response(id: 0, ok: false, data: nil, error: "Invalid folder name (use only letters, numbers, spaces, hyphens, underscores)", code: "INVALID_INPUT")
     }
 
-    doc.folders.append(ParsedFolder(name: name, entries: []))
+    var doc = readDocument(config: config)
+
+    // If creating at root, check for duplicates at root level
+    if parentId == nil {
+        if doc.folders.contains(where: { $0.name == name }) {
+            return Response(id: 0, ok: false, data: nil, error: "Folder already exists", code: "ALREADY_EXISTS")
+        }
+        doc.folders.append(ParsedFolder(name: name, level: 1, entries: []))
+    } else {
+        // Creating as child of existing folder
+        guard let targetLoc = findFolderById(doc, id: parentId!) else {
+            return Response(id: 0, ok: false, data: nil, error: "Parent folder not found", code: "NOT_FOUND")
+        }
+
+        // Check max depth
+        if targetLoc.folder.level >= 3 {
+            return Response(id: 0, ok: false, data: nil, error: "Cannot create folder: would exceed maximum depth of 3 levels", code: "MAX_DEPTH")
+        }
+
+        // Check for duplicate name among siblings
+        if targetLoc.folder.children.contains(where: { $0.name == name }) {
+            return Response(id: 0, ok: false, data: nil, error: "A folder with that name already exists in the parent", code: "ALREADY_EXISTS")
+        }
+
+        let newFolder = ParsedFolder(name: name, level: targetLoc.folder.level + 1, entries: [])
+        guard addFolderTo(&doc, folder: newFolder, targetId: parentId) else {
+            return Response(id: 0, ok: false, data: nil, error: "Failed to create folder", code: "INTERNAL_ERROR")
+        }
+    }
 
     do {
         try writeDocument(doc, config: config)
 
-        let folderData: [String: Any] = [
-            "name": name,
-            "path": name,
-            "threadCount": 0
-        ]
-
-        return Response(id: 0, ok: true, data: AnyCodable(folderData), error: nil, code: nil)
+        // Return full folder tree
+        let folders: [[String: Any]] = doc.folders.map { folder in
+            folderToDict(folder, parentPath: nil)
+        }
+        return Response(id: 0, ok: true, data: AnyCodable(folders), error: nil, code: nil)
     } catch {
         return Response(id: 0, ok: false, data: nil, error: error.localizedDescription, code: "IO_ERROR")
     }
@@ -841,10 +1014,20 @@ func handleRenameFolder(oldPath: String?, newPath: String?) -> Response {
         return Response(id: 0, ok: false, data: nil, error: "Valid folder names are required", code: "INVALID_INPUT")
     }
 
+    // Security: Validate new folder name
+    guard isValidFolderName(newName) else {
+        return Response(id: 0, ok: false, data: nil, error: "Invalid folder name (use only letters, numbers, spaces, hyphens, underscores)", code: "INVALID_INPUT")
+    }
+
     var doc = readDocument(config: config)
 
     guard let fi = doc.folders.firstIndex(where: { $0.name == oldName }) else {
         return Response(id: 0, ok: false, data: nil, error: "Folder not found", code: "NOT_FOUND")
+    }
+
+    // Check if new name already exists (unless renaming to same name with different case)
+    if doc.folders.contains(where: { $0.name == newName && $0.name != oldName }) {
+        return Response(id: 0, ok: false, data: nil, error: "A folder with that name already exists", code: "ALREADY_EXISTS")
     }
 
     doc.folders[fi] = ParsedFolder(name: newName, entries: doc.folders[fi].entries)
@@ -939,6 +1122,240 @@ func handleMoveThread(url: String?, toFolder: String?) -> Response {
     }
 }
 
+// MARK: - Nested Folder Operations
+
+// Helper struct for folder search results
+struct FolderLocation {
+    var folder: ParsedFolder
+    var parentPath: String?
+}
+
+// Find a folder by ID in the tree (returns folder and its parent path)
+func findFolderById(_ doc: ParsedDocument, id: String) -> FolderLocation? {
+    func search(folders: [ParsedFolder], parentPath: String?) -> FolderLocation? {
+        for folder in folders {
+            let folderId = folder.id(parentPath: parentPath)
+            if folderId == id {
+                return FolderLocation(folder: folder, parentPath: parentPath)
+            }
+            let childPath = folder.path(parentPath: parentPath)
+            if let found = search(folders: folder.children, parentPath: childPath) {
+                return found
+            }
+        }
+        return nil
+    }
+    return search(folders: doc.folders, parentPath: nil)
+}
+
+// Remove a folder from the document tree, returns the removed folder
+func removeFolderById(_ doc: inout ParsedDocument, id: String) -> ParsedFolder? {
+    func removeFrom(folders: inout [ParsedFolder], parentPath: String?) -> ParsedFolder? {
+        for i in folders.indices {
+            let folderId = folders[i].id(parentPath: parentPath)
+            if folderId == id {
+                return folders.remove(at: i)
+            }
+            let childPath = folders[i].path(parentPath: parentPath)
+            if let removed = removeFrom(folders: &folders[i].children, parentPath: childPath) {
+                return removed
+            }
+        }
+        return nil
+    }
+    return removeFrom(folders: &doc.folders, parentPath: nil)
+}
+
+// Add a folder as child of another folder by ID (or to root if targetId is nil)
+func addFolderTo(_ doc: inout ParsedDocument, folder: ParsedFolder, targetId: String?) -> Bool {
+    if targetId == nil {
+        // Add to root
+        var newFolder = folder
+        newFolder.level = 1
+        doc.folders.append(newFolder)
+        return true
+    }
+
+    func addTo(folders: inout [ParsedFolder], parentPath: String?, targetLevel: Int) -> Bool {
+        for i in folders.indices {
+            let folderId = folders[i].id(parentPath: parentPath)
+            if folderId == targetId {
+                // Check max depth
+                if folders[i].level >= 3 {
+                    return false
+                }
+                var newFolder = folder
+                newFolder.level = folders[i].level + 1
+                // Recursively update children levels
+                updateLevels(&newFolder, baseLevel: newFolder.level)
+                folders[i].children.append(newFolder)
+                return true
+            }
+            let childPath = folders[i].path(parentPath: parentPath)
+            if addTo(folders: &folders[i].children, parentPath: childPath, targetLevel: targetLevel + 1) {
+                return true
+            }
+        }
+        return false
+    }
+    return addTo(folders: &doc.folders, parentPath: nil, targetLevel: 1)
+}
+
+// Update levels recursively after a folder is moved
+func updateLevels(_ folder: inout ParsedFolder, baseLevel: Int) {
+    folder.level = baseLevel
+    for i in folder.children.indices {
+        updateLevels(&folder.children[i], baseLevel: baseLevel + 1)
+    }
+}
+
+// Get max depth of a folder subtree
+func getMaxDepth(_ folder: ParsedFolder) -> Int {
+    if folder.children.isEmpty {
+        return 1
+    }
+    return 1 + folder.children.map { getMaxDepth($0) }.max()!
+}
+
+// Check if folderId is a descendant of ancestorId
+func isDescendant(_ doc: ParsedDocument, folderId: String, ancestorId: String) -> Bool {
+    guard let ancestorLoc = findFolderById(doc, id: ancestorId) else { return false }
+
+    func checkDescendants(folder: ParsedFolder, parentPath: String?) -> Bool {
+        for child in folder.children {
+            let childId = child.id(parentPath: folder.path(parentPath: parentPath))
+            if childId == folderId {
+                return true
+            }
+            if checkDescendants(folder: child, parentPath: folder.path(parentPath: parentPath)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    return checkDescendants(folder: ancestorLoc.folder, parentPath: ancestorLoc.parentPath)
+}
+
+func handleNestFolder(folderId: String?, targetParentId: String?) -> Response {
+    guard let folderId = folderId, !folderId.isEmpty, let config = Config.read() else {
+        return Response(id: 0, ok: false, data: nil, error: "folderId is required", code: "INVALID_INPUT")
+    }
+
+    // Cannot nest Uncategorized
+    if folderId == "uncategorized" {
+        return Response(id: 0, ok: false, data: nil, error: "Cannot move Uncategorized folder", code: "INVALID_INPUT")
+    }
+
+    var doc = readDocument(config: config)
+
+    // Find the folder to move
+    guard let folderLoc = findFolderById(doc, id: folderId) else {
+        return Response(id: 0, ok: false, data: nil, error: "Folder not found", code: "NOT_FOUND")
+    }
+
+    // Cannot nest into self or descendants
+    if let targetId = targetParentId, targetId == folderId {
+        return Response(id: 0, ok: false, data: nil, error: "Cannot nest folder into itself", code: "INVALID_INPUT")
+    }
+    if let targetId = targetParentId, isDescendant(doc, folderId: targetId, ancestorId: folderId) {
+        return Response(id: 0, ok: false, data: nil, error: "Cannot nest folder into its own descendant", code: "INVALID_INPUT")
+    }
+
+    // Check if target would exceed max depth
+    if let targetId = targetParentId, let targetLoc = findFolderById(doc, id: targetId) {
+        let targetLevel = targetLoc.folder.level
+        let sourceDepth = getMaxDepth(folderLoc.folder)
+        if targetLevel + sourceDepth > 3 {
+            return Response(id: 0, ok: false, data: nil, error: "Cannot nest: would exceed maximum depth of 3 levels", code: "MAX_DEPTH")
+        }
+    }
+
+    // Remove folder from current location
+    guard let removedFolder = removeFolderById(&doc, id: folderId) else {
+        return Response(id: 0, ok: false, data: nil, error: "Failed to remove folder", code: "INTERNAL_ERROR")
+    }
+
+    // Add to new location
+    guard addFolderTo(&doc, folder: removedFolder, targetId: targetParentId) else {
+        // Rollback: put it back at root
+        doc.folders.append(removedFolder)
+        return Response(id: 0, ok: false, data: nil, error: "Failed to add folder to target", code: "INTERNAL_ERROR")
+    }
+
+    do {
+        try writeDocument(doc, config: config)
+
+        // Return updated folder list
+        let folders: [[String: Any]] = doc.folders.map { folder in
+            folderToDict(folder, parentPath: nil)
+        }
+        return Response(id: 0, ok: true, data: AnyCodable(folders), error: nil, code: nil)
+    } catch {
+        return Response(id: 0, ok: false, data: nil, error: error.localizedDescription, code: "IO_ERROR")
+    }
+}
+
+func handleReorderFolder(folderId: String?, beforeId: String?, afterId: String?) -> Response {
+    guard let folderId = folderId, !folderId.isEmpty, let config = Config.read() else {
+        return Response(id: 0, ok: false, data: nil, error: "folderId is required", code: "INVALID_INPUT")
+    }
+
+    // Cannot reorder Uncategorized (it always stays at root)
+    if folderId == "uncategorized" {
+        return Response(id: 0, ok: false, data: nil, error: "Cannot reorder Uncategorized folder", code: "INVALID_INPUT")
+    }
+
+    var doc = readDocument(config: config)
+
+    // Verify the folder exists
+    guard findFolderById(doc, id: folderId) != nil else {
+        return Response(id: 0, ok: false, data: nil, error: "Folder not found", code: "NOT_FOUND")
+    }
+
+    // Determine target position - folder should stay at same level, just change order
+    // This is simpler: remove from current position, insert at new position in same parent
+
+    // For now, implement simple reordering at root level only
+    // Full nested reordering would require tracking parent IDs in the request
+
+    // Remove folder
+    guard let removedFolder = removeFolderById(&doc, id: folderId) else {
+        return Response(id: 0, ok: false, data: nil, error: "Failed to remove folder", code: "INTERNAL_ERROR")
+    }
+
+    // Find insert position based on beforeId or afterId
+    var insertIndex = doc.folders.count  // Default: append at end
+
+    if let beforeId = beforeId, let beforeLoc = findFolderById(doc, id: beforeId) {
+        // Insert before this folder (only works for root level for now)
+        if let idx = doc.folders.firstIndex(where: { $0.name == beforeLoc.folder.name }) {
+            insertIndex = idx
+        }
+    } else if let afterId = afterId, let afterLoc = findFolderById(doc, id: afterId) {
+        // Insert after this folder
+        if let idx = doc.folders.firstIndex(where: { $0.name == afterLoc.folder.name }) {
+            insertIndex = idx + 1
+        }
+    }
+
+    // Insert at new position
+    var folderToInsert = removedFolder
+    folderToInsert.level = 1  // Root level
+    doc.folders.insert(folderToInsert, at: min(insertIndex, doc.folders.count))
+
+    do {
+        try writeDocument(doc, config: config)
+
+        let folders: [[String: Any]] = doc.folders.map { folder in
+            folderToDict(folder, parentPath: nil)
+        }
+        return Response(id: 0, ok: true, data: AnyCodable(folders), error: nil, code: nil)
+    } catch {
+        return Response(id: 0, ok: false, data: nil, error: error.localizedDescription, code: "IO_ERROR")
+    }
+}
+
 // MARK: - Message Router
 
 func handleRequest(_ request: Request) -> Response {
@@ -966,13 +1383,17 @@ func handleRequest(_ request: Request) -> Response {
     case "getFolders":
         response = handleGetFolders()
     case "createFolder":
-        response = handleCreateFolder(path: request.path)
+        response = handleCreateFolder(path: request.path, parentId: request.parentId)
     case "renameFolder":
         response = handleRenameFolder(oldPath: request.oldPath, newPath: request.newPath)
     case "deleteFolder":
         response = handleDeleteFolder(path: request.path, recursive: request.recursive)
     case "moveThread":
         response = handleMoveThread(url: request.url, toFolder: request.toFolder)
+    case "nestFolder":
+        response = handleNestFolder(folderId: request.folderId, targetParentId: request.targetParentId)
+    case "reorderFolder":
+        response = handleReorderFolder(folderId: request.folderId, beforeId: request.beforeId, afterId: request.afterId)
     default:
         response = Response(id: 0, ok: false, data: nil, error: "Unknown message type: \(request.type)", code: "UNKNOWN_TYPE")
     }

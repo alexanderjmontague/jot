@@ -23,8 +23,12 @@ export type ClipMetadata = {
 };
 
 export type Folder = {
-  name: string;       // The folder name, e.g., "Finance"
-  path: string;       // Same as name (for compatibility)
-  threadCount: number;
+  id: string;                  // Unique ID (path-based: "finance", "finance/banking")
+  name: string;                // Display name, e.g., "Finance"
+  path: string;                // Full path, e.g., "Finance/Banking"
+  level: 1 | 2 | 3;            // Nesting depth (1 = root, 2 = child, 3 = grandchild)
+  parentId: string | null;     // Parent folder ID, null for root folders
+  threadCount: number;         // Number of entries directly in this folder
+  children: Folder[];          // Child folders
 };
 

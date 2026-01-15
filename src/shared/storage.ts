@@ -313,8 +313,8 @@ export async function getFolders(): Promise<Folder[]> {
   }
 }
 
-export async function createFolder(path: string): Promise<Folder> {
-  return await sendMessage<Folder>({ type: 'createFolder', path });
+export async function createFolder(name: string, parentId?: string): Promise<Folder[]> {
+  return await sendMessage<Folder[]>({ type: 'createFolder', path: name, parentId });
 }
 
 export async function renameFolder(oldPath: string, newPath: string): Promise<Folder> {
@@ -334,4 +334,22 @@ export async function moveThread(url: string, toFolder: string): Promise<ClipThr
   });
   void setCachedThread(normalized, thread);
   return thread;
+}
+
+/**
+ * Move a folder into another folder (or to root if targetParentId is null)
+ */
+export async function nestFolder(folderId: string, targetParentId: string | null): Promise<Folder[]> {
+  return await sendMessage<Folder[]>({ type: 'nestFolder', folderId, targetParentId });
+}
+
+/**
+ * Reorder a folder within its current level
+ */
+export async function reorderFolder(
+  folderId: string,
+  beforeId?: string,
+  afterId?: string
+): Promise<Folder[]> {
+  return await sendMessage<Folder[]>({ type: 'reorderFolder', folderId, beforeId, afterId });
 }

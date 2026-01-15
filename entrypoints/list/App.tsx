@@ -16,6 +16,8 @@ import {
   renameFolder as renameFolderApi,
   deleteFolder as deleteFolderApi,
   moveThread,
+  nestFolder as nestFolderApi,
+  reorderFolder as reorderFolderApi,
   type ClipThread,
   type Folder,
 } from '../../src/shared/storage';
@@ -408,6 +410,18 @@ function ListApp() {
   const [folders, setFolders] = useState<Folder[]>([]);
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null); // null = "All"
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => {
+    // Load from localStorage
+    try {
+      const saved = localStorage.getItem('jot-expanded-folders');
+      if (saved) {
+        return new Set(JSON.parse(saved) as string[]);
+      }
+    } catch {
+      // ignore
+    }
+    return new Set<string>();
+  });
 
   // Load folders
   useEffect(() => {
@@ -419,9 +433,8 @@ function ListApp() {
     void getFolders().then(setFolders);
   }, [threads]);
 
-  const handleCreateFolder = useCallback(async (name: string) => {
-    await createFolder(name);
-    const updated = await getFolders();
+  const handleCreateFolder = useCallback(async (name: string, parentId?: string) => {
+    const updated = await createFolder(name, parentId);
     setFolders(updated);
   }, []);
 
@@ -466,6 +479,38 @@ function ListApp() {
       console.error('Failed to move thread', err);
     }
   }, [replaceThread]);
+
+  const handleToggleExpanded = useCallback((folderId: string) => {
+    setExpandedFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(folderId)) {
+        next.delete(folderId);
+      } else {
+        next.add(folderId);
+      }
+      // Persist to localStorage
+      localStorage.setItem('jot-expanded-folders', JSON.stringify([...next]));
+      return next;
+    });
+  }, []);
+
+  const handleNestFolder = useCallback(async (folderId: string, targetParentId: string | null) => {
+    try {
+      const updated = await nestFolderApi(folderId, targetParentId);
+      setFolders(updated);
+    } catch (err) {
+      console.error('Failed to nest folder', err);
+    }
+  }, []);
+
+  const handleReorderFolder = useCallback(async (folderId: string, beforeId?: string, afterId?: string) => {
+    try {
+      const updated = await reorderFolderApi(folderId, beforeId, afterId);
+      setFolders(updated);
+    } catch (err) {
+      console.error('Failed to reorder folder', err);
+    }
+  }, []);
 
   const filters = useMemo(() => {
     const groups = new Map<string, { label: string; count: number }>();
@@ -672,11 +717,15 @@ function ListApp() {
             selectedFolder={selectedFolder}
             collapsed={sidebarCollapsed}
             totalThreadCount={threads.length}
+            expandedFolders={expandedFolders}
             onSelectFolder={setSelectedFolder}
             onCreateFolder={handleCreateFolder}
             onRenameFolder={handleRenameFolder}
             onDeleteFolder={handleDeleteFolder}
             onToggleCollapsed={() => setSidebarCollapsed(!sidebarCollapsed)}
+            onToggleExpanded={handleToggleExpanded}
+            onNestFolder={handleNestFolder}
+            onReorderFolder={handleReorderFolder}
           />
 
           {/* Main content */}
