@@ -26,6 +26,8 @@ Download [`jot-extension.zip`](https://github.com/alexanderjmontague/jot/release
 
 Works with Chrome, Arc, Brave, Edge, and other Chromium browsers.
 
+**Keyboard shortcut:** `⇧⌘E` (Shift+Cmd+E) to open Jot on any page.
+
 ---
 
 ## How it works
