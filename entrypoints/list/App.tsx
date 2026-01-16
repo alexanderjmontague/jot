@@ -31,7 +31,7 @@ import {
 import { DownloadHelperView } from '../../src/shared/components/DownloadHelperView';
 import { formatAbsolute, formatRelativeOrAbsolute } from '../../src/shared/datetime';
 import { formatDisplayUrl, stripWwwPrefix, getBaseDomainInfo } from '../../src/shared/url';
-import { Loader2, RefreshCw, Settings, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Loader2, RefreshCw, Settings, CheckCircle2, AlertCircle, Globe, AlertTriangle, Github } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -48,6 +48,23 @@ type PreviewFailures = Record<string, true>;
 type PreviewFit = 'cover' | 'contain';
 type PreviewFits = Record<string, PreviewFit>;
 type AppState = 'loading' | 'not-installed' | 'setup' | 'ready' | 'error';
+
+// Flatten folder tree for dropdown display (shows all folders with depth info)
+function flattenFoldersForDropdown(folders: Folder[]): { folder: Folder; depth: number }[] {
+  const result: { folder: Folder; depth: number }[] = [];
+
+  function traverse(items: Folder[], depth: number) {
+    for (const folder of items) {
+      result.push({ folder, depth });
+      if (folder.children.length > 0) {
+        traverse(folder.children, depth + 1);
+      }
+    }
+  }
+
+  traverse(folders, 0);
+  return result;
+}
 
 const PREVIEW_FRAME_ASPECT = 1.91;
 const PREVIEW_SIMILARITY_TOLERANCE = 0.25;
@@ -123,6 +140,19 @@ function FolderMoveIcon(props: SVGProps<SVGSVGElement>) {
       <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
       <path d="M12 10v6" />
       <path d="m15 13-3 3-3-3" />
+    </svg>
+  );
+}
+
+function XIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+      {...props}
+    >
+      <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
     </svg>
   );
 }
@@ -353,6 +383,10 @@ function SettingsDialog() {
                   disabled={status === 'saving'}
                   className="font-mono text-sm"
                 />
+                <p className="flex items-start gap-1.5 text-xs text-yellow-600 dark:text-yellow-500">
+                  <AlertTriangle className="size-3.5 shrink-0 mt-0.5" />
+                  <span>Changing this doesn't move the existing folder. Move it first, then update the path here.</span>
+                </p>
               </div>
 
               {error && (
@@ -388,6 +422,27 @@ function SettingsDialog() {
                   'Save'
                 )}
               </Button>
+
+              <div className="flex items-center justify-center gap-2 pt-2">
+                <a
+                  href="https://github.com/alexanderjmontague/jot"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                >
+                  <Github className="size-3" />
+                  <span>GitHub</span>
+                </a>
+                <a
+                  href="https://x.com/axmont"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                >
+                  <XIcon className="size-2.5" />
+                  <span>Built by @axmont</span>
+                </a>
+              </div>
             </>
           )}
         </div>
@@ -431,6 +486,18 @@ function ListApp() {
   useEffect(() => {
     void getFolders().then(setFolders);
   }, [threads]);
+
+  // Auto-refresh when tab becomes visible
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refresh();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [refresh]);
 
   const handleCreateFolder = useCallback(async (name: string, parentId?: string) => {
     const updated = await createFolder(name, parentId);
@@ -511,10 +578,34 @@ function ListApp() {
     }
   }, []);
 
+  // Memoize flattened folders for dropdown to avoid recalculating on every render
+  const flattenedFolders = useMemo(() => flattenFoldersForDropdown(folders), [folders]);
+
+  // Filter by folder first
+  const filteredByFolder = useMemo(() => {
+    if (selectedFolder === null) {
+      return threads; // "All" - show everything
+    }
+    return threads.filter((thread) => thread.folder === selectedFolder);
+  }, [threads, selectedFolder]);
+
+  // Check if domain filter bar should be visible (based on all threads, not filtered)
+  const showDomainFilter = useMemo(() => {
+    const groups = new Map<string, number>();
+    threads.forEach((thread) => {
+      const base = getBaseDomainInfo(thread.url);
+      if (!base) return;
+      groups.set(base.key, (groups.get(base.key) ?? 0) + 1);
+    });
+    // Show if any domain has more than one thread
+    return Array.from(groups.values()).some((count) => count > 1);
+  }, [threads]);
+
+  // Calculate counts based on folder-filtered threads
   const filters = useMemo(() => {
     const groups = new Map<string, { label: string; count: number }>();
 
-    threads.forEach((thread) => {
+    filteredByFolder.forEach((thread) => {
       const base = getBaseDomainInfo(thread.url);
       if (!base) {
         return;
@@ -537,22 +628,14 @@ function ListApp() {
         count,
       }));
 
-    return [{ id: 'all', label: 'All sites', count: threads.length }, ...domainFilters];
-  }, [threads]);
+    return [{ id: 'all', label: 'All sites', count: filteredByFolder.length }, ...domainFilters];
+  }, [filteredByFolder]);
 
   useEffect(() => {
     if (activeFilterId !== 'all' && !filters.some((option) => option.id === activeFilterId)) {
       setActiveFilterId('all');
     }
   }, [filters, activeFilterId]);
-
-  // Filter by folder first
-  const filteredByFolder = useMemo(() => {
-    if (selectedFolder === null) {
-      return threads; // "All" - show everything
-    }
-    return threads.filter((thread) => thread.folder === selectedFolder);
-  }, [threads, selectedFolder]);
 
   const filteredByDomain = useMemo(() => {
     if (activeFilterId === 'all') {
@@ -676,7 +759,11 @@ function ListApp() {
       <div className="flex h-screen flex-col overflow-hidden bg-muted/20">
         {/* Fixed top navbar */}
         <nav className="shrink-0 flex w-full items-center gap-4 border-b border-border bg-background px-3 py-2">
-          <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setSelectedFolder(null)}
+            className="flex items-center gap-1.5 shrink-0 rounded-md px-1 -ml-1 hover:bg-accent/50 transition-colors"
+          >
             <img
               src="/jot_logo.svg"
               alt="Jot"
@@ -684,8 +771,8 @@ function ListApp() {
               style={{ width: 24, height: 24 }}
               draggable={false}
             />
-            <h1 className="text-lg font-semibold text-foreground">Comments</h1>
-          </div>
+            <h1 className="text-lg font-semibold text-foreground">Jot</h1>
+          </button>
 
           {/* Search bar */}
           <div className="flex flex-1 items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-1.5 text-muted-foreground focus-within:border-border focus-within:bg-muted/50 transition-colors">
@@ -744,21 +831,22 @@ function ListApp() {
 
           {/* Main content area */}
           <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
-            {/* Fixed filter navbar - only visible when there are domain filters */}
-            {filters.length > 1 && (
-              <nav className="shrink-0 flex w-full items-center gap-2 overflow-x-auto border-b border-border bg-background px-3 py-2">
+            {/* Fixed filter navbar - visible if any domain has multiple threads globally */}
+            {showDomainFilter && (
+              <nav className="shrink-0 flex h-[49px] w-full items-center gap-2 overflow-x-auto border-b border-border/50 bg-background px-3">
                 {filters.map((option) => (
                   <Button
                     key={option.id}
                     type="button"
                     size="sm"
                     variant={option.id === activeFilterId ? 'secondary' : 'ghost'}
-                    className="rounded-full"
+                    className={`rounded-full gap-1.5 ${option.id === activeFilterId ? '' : 'text-muted-foreground/60'}`}
                     aria-pressed={option.id === activeFilterId}
                     onClick={() => setActiveFilterId(option.id)}
                   >
+                    <Globe className="size-3" />
                     <span className="whitespace-nowrap">{option.label}</span>
-                    <span className="ml-1 text-xs text-muted-foreground/70">({option.count})</span>
+                    <span className="flex size-4 items-center justify-center rounded-full bg-muted-foreground/15 text-[10px] font-medium">{option.count}</span>
                   </Button>
                 ))}
               </nav>
@@ -877,15 +965,23 @@ function ListApp() {
                                       <p>Move to folder</p>
                                     </TooltipContent>
                                   </Tooltip>
-                                  <DropdownMenuContent align="end">
-                                    {folders.map((folder) => (
+                                  <DropdownMenuContent align="end" className="max-w-[200px]">
+                                    {flattenedFolders.map(({ folder, depth }) => (
                                       <DropdownMenuItem
-                                        key={folder.name}
+                                        key={folder.id}
                                         onClick={() => handleMoveThread(thread.url, folder.name)}
                                         disabled={thread.folder === folder.name}
+                                        className="overflow-hidden"
                                       >
-                                        {folder.name}
-                                        {thread.folder === folder.name && ' (current)'}
+                                        {depth > 0 && (
+                                          <span className="text-muted-foreground/50 shrink-0" style={{ marginLeft: (depth - 1) * 10 }}>
+                                            └
+                                          </span>
+                                        )}
+                                        <span className="min-w-0 flex-1 truncate">
+                                          {folder.name}
+                                          {thread.folder === folder.name && ' (current)'}
+                                        </span>
                                       </DropdownMenuItem>
                                     ))}
                                   </DropdownMenuContent>

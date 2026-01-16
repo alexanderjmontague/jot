@@ -8,14 +8,24 @@ import { isValidWebUrl } from '../../src/shared/url';
 import { getCachedThread } from '../../src/shared/threadCache';
 import type { ClipThread, Folder } from '../../src/shared/storage';
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '../../src/components/ui/tooltip';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../../src/components/ui/select';
-import { Loader2, Folder as FolderIcon } from 'lucide-react';
+
+// Flatten folder tree for dropdown display (shows all folders with depth info)
+function flattenFoldersForDropdown(folders: Folder[]): { folder: Folder; depth: number }[] {
+  const result: { folder: Folder; depth: number }[] = [];
+
+  function traverse(items: Folder[], depth: number) {
+    for (const folder of items) {
+      result.push({ folder, depth });
+      if (folder.children.length > 0) {
+        traverse(folder.children, depth + 1);
+      }
+    }
+  }
+
+  traverse(folders, 0);
+  return result;
+}
+import { Loader2 } from 'lucide-react';
 
 type AppState = 'loading' | 'not-installed' | 'setup' | 'ready' | 'error';
 
@@ -160,29 +170,13 @@ function PopupApp() {
     );
   }
 
-  // Filter out Uncategorized from display list (it's the default)
-  const displayFolders = folders.filter((f) => f.name !== 'Uncategorized');
+  // Flatten folder tree and filter out Uncategorized (it's the default)
+  const flattenedFolders = flattenFoldersForDropdown(folders).filter(
+    ({ folder }) => folder.name !== 'Uncategorized'
+  );
 
   return (
     <div className="flex w-[320px] flex-col gap-2 bg-background p-2">
-      {displayFolders.length > 0 && (
-        <Select value={selectedFolder} onValueChange={setSelectedFolder}>
-          <SelectTrigger className="h-8 text-xs">
-            <FolderIcon className="mr-2 h-3 w-3" />
-            <SelectValue placeholder="Save to folder..." />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="Uncategorized">
-              Uncategorized
-            </SelectItem>
-            {displayFolders.map((f) => (
-              <SelectItem key={f.name} value={f.name}>
-                {f.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      )}
       <MinimalClipEditor
         url={url}
         initialThread={initialThread}
@@ -190,6 +184,9 @@ function PopupApp() {
         showSidebarButton={false}
         onCommentAdded={handleSave}
         defaultFolder={selectedFolder}
+        flattenedFolders={flattenedFolders}
+        selectedFolder={selectedFolder}
+        onFolderChange={setSelectedFolder}
       />
     </div>
   );

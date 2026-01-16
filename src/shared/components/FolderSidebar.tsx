@@ -1,17 +1,16 @@
-import { useState, useMemo, type SVGProps } from 'react';
+import { useState, useMemo, useRef, type SVGProps } from 'react';
 import {
   DndContext,
   DragOverlay,
   useSensor,
   useSensors,
   PointerSensor,
-  closestCenter,
+  useDraggable,
+  useDroppable,
   type DragStartEvent,
   type DragEndEvent,
-  type DragOverEvent,
+  type DragMoveEvent,
 } from '@dnd-kit/core';
-import { useSortable, SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { ScrollArea } from '../../components/ui/scroll-area';
@@ -28,6 +27,12 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../../components/ui/dropdown-menu';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+  TooltipProvider,
+} from '../../components/ui/tooltip';
 import type { Folder } from '../types/clip';
 
 function FolderIcon(props: SVGProps<SVGSVGElement>) {
@@ -197,7 +202,7 @@ type DropPosition = 'before' | 'inside' | 'after' | null;
 
 type FolderSidebarProps = {
   folders: Folder[];
-  selectedFolder: string | null; // null means "All"
+  selectedFolder: string | null;
   collapsed: boolean;
   totalThreadCount: number;
   expandedFolders: Set<string>;
@@ -211,7 +216,20 @@ type FolderSidebarProps = {
   onReorderFolder: (folderId: string, beforeId?: string, afterId?: string) => Promise<void>;
 };
 
-// Flatten folder tree for sortable context
+// Collect all folder names from tree
+function getAllFolderNames(folders: Folder[]): Set<string> {
+  const names = new Set<string>();
+  function traverse(items: Folder[]) {
+    for (const folder of items) {
+      names.add(folder.name.toLowerCase());
+      traverse(folder.children);
+    }
+  }
+  traverse(folders);
+  return names;
+}
+
+// Flatten folder tree for display
 function flattenFolders(folders: Folder[], expandedSet: Set<string>): { folder: Folder; depth: number }[] {
   const result: { folder: Folder; depth: number }[] = [];
 
@@ -226,6 +244,16 @@ function flattenFolders(folders: Folder[], expandedSet: Set<string>): { folder: 
 
   traverse(folders, 0);
   return result;
+}
+
+// Find a folder by ID in the tree
+function findFolderById(folders: Folder[], id: string): Folder | null {
+  for (const folder of folders) {
+    if (folder.id === id) return folder;
+    const found = findFolderById(folder.children, id);
+    if (found) return found;
+  }
+  return null;
 }
 
 // Check if a folder is a descendant of another
@@ -258,17 +286,7 @@ function getMaxDepth(folder: Folder): number {
   return 1 + Math.max(...folder.children.map(getMaxDepth));
 }
 
-// Find a folder by ID in the tree
-function findFolderById(folders: Folder[], id: string): Folder | null {
-  for (const folder of folders) {
-    if (folder.id === id) return folder;
-    const found = findFolderById(folder.children, id);
-    if (found) return found;
-  }
-  return null;
-}
-
-type SortableFolderItemProps = {
+type DraggableFolderItemProps = {
   folder: Folder;
   depth: number;
   isSelected: boolean;
@@ -282,7 +300,7 @@ type SortableFolderItemProps = {
   onDelete: () => void;
 };
 
-function SortableFolderItem({
+function DraggableFolderItem({
   folder,
   depth,
   isSelected,
@@ -294,61 +312,77 @@ function SortableFolderItem({
   onToggleExpand,
   onRename,
   onDelete,
-}: SortableFolderItemProps) {
-  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({
+}: DraggableFolderItemProps) {
+  const { attributes, listeners, setNodeRef: setDragRef, isDragging: isDraggingThis } = useDraggable({
     id: folder.id,
   });
 
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
+  const { setNodeRef: setDropRef } = useDroppable({
+    id: folder.id,
+  });
+
+  // Combine refs
+  const setNodeRef = (node: HTMLElement | null) => {
+    setDragRef(node);
+    setDropRef(node);
   };
 
   // Subtle indentation: 10px per nesting level, only for nested items
-  const indentStyle = depth > 0 ? { marginLeft: `${depth * 10}px` } : {};
+  const indentPadding = depth > 0 ? depth * 10 : 0;
 
   return (
     <div
       ref={setNodeRef}
-      style={style}
-      className={`relative ${isDragging ? 'opacity-50' : ''}`}
-      {...attributes}
+      className={`relative w-full overflow-hidden ${isDragging || isDraggingThis ? 'opacity-40' : ''}`}
     >
       {/* Drop indicator: before */}
       {dropPosition === 'before' && (
-        <div className="absolute left-0 right-0 top-0 h-0.5 bg-primary" />
+        <div className="absolute left-0 right-0 top-0 h-0.5 bg-primary z-10" />
       )}
 
       {/* Drop indicator: inside */}
       {dropPosition === 'inside' && (
-        <div className="absolute inset-0 ring-2 ring-primary ring-inset rounded-lg pointer-events-none" />
+        <div className="absolute inset-0 ring-2 ring-primary ring-inset rounded-lg pointer-events-none z-10" />
+      )}
+
+      {/* Drop indicator: after */}
+      {dropPosition === 'after' && (
+        <div className="absolute left-0 right-0 bottom-0 h-0.5 bg-primary z-10" />
       )}
 
       <button
         type="button"
-        style={indentStyle}
-        className={`group relative flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm cursor-pointer transition-colors ${
+        style={{ paddingLeft: 12 + indentPadding }}
+        className={`group relative flex w-full min-w-0 items-center gap-2 rounded-lg pr-3 py-2 text-sm overflow-hidden transition-colors ${
           isSelected
-            ? 'bg-muted text-foreground'
+            ? 'bg-primary/15 text-foreground'
             : 'text-foreground/80 hover:bg-accent/40 hover:text-foreground'
         }`}
         onClick={onSelect}
+        {...attributes}
         {...listeners}
       >
-        {/* Expand/collapse chevron - only show if has children */}
+        {/* Expand/collapse chevron - positioned in left padding area */}
         {hasChildren && (
-          <button
-            type="button"
-            className="p-0.5 -ml-1.5 -mr-1.5 rounded hover:bg-accent/60 transition-colors"
+          <span
+            role="button"
+            tabIndex={0}
+            className="absolute -left-1 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-accent/60 transition-colors"
             onClick={(e) => {
               e.stopPropagation();
               onToggleExpand();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.stopPropagation();
+                onToggleExpand();
+              }
             }}
           >
             <ChevronRightIcon
               className={`h-3 w-3 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
             />
-          </button>
+          </span>
         )}
 
         {isSelected ? (
@@ -357,58 +391,56 @@ function SortableFolderItem({
           <FolderIcon className="h-4 w-4 text-muted-foreground group-hover:text-foreground/70 shrink-0" />
         )}
 
-        <span className="flex-1 truncate text-left">{folder.name}</span>
+        <span className="flex-1 min-w-0 truncate text-left">{folder.name}</span>
 
-        <span
-          className={`text-xs tabular-nums transition-opacity group-hover:opacity-0 ${
-            isSelected ? 'text-foreground/70' : 'text-muted-foreground'
-          }`}
-        >
-          {folder.threadCount}
-        </span>
+        {/* Right side - fixed width container for count/menu */}
+        <div className="relative w-8 shrink-0 flex items-center justify-end">
+          <span
+            className={`text-xs tabular-nums transition-opacity group-hover:opacity-0 ${
+              isSelected ? 'text-foreground/70' : 'text-muted-foreground'
+            }`}
+          >
+            {folder.threadCount}
+          </span>
 
-        {/* Three-dot menu */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <div
-              role="button"
-              tabIndex={0}
-              className={`absolute right-2 p-1 rounded-md transition-opacity opacity-0 group-hover:opacity-50 hover:!opacity-100 ${
-                isSelected ? 'hover:bg-accent-foreground/10' : 'hover:bg-accent/60'
-              }`}
-              onClick={(e) => e.stopPropagation()}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.stopPropagation();
-                }
-              }}
-            >
-              <MoreHorizontalIcon className="h-3.5 w-3.5" />
-            </div>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-[120px]">
-            <DropdownMenuItem onClick={onRename}>Rename</DropdownMenuItem>
-            <DropdownMenuItem
-              className="text-destructive focus:text-destructive"
-              onClick={onDelete}
-            >
-              Delete
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+          {/* Three-dot menu - overlays count on hover */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <div
+                role="button"
+                tabIndex={0}
+                className={`absolute inset-0 flex items-center justify-end transition-opacity opacity-0 group-hover:opacity-50 hover:!opacity-100`}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.stopPropagation();
+                  }
+                }}
+              >
+                <div className={`p-1 rounded-md ${isSelected ? 'hover:bg-accent-foreground/10' : 'hover:bg-accent/60'}`}>
+                  <MoreHorizontalIcon className="h-3.5 w-3.5" />
+                </div>
+              </div>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-[120px]">
+              <DropdownMenuItem onClick={onRename}>Rename</DropdownMenuItem>
+              <DropdownMenuItem
+                className="text-destructive focus:text-destructive"
+                onClick={onDelete}
+              >
+                Delete
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </button>
-
-      {/* Drop indicator: after */}
-      {dropPosition === 'after' && (
-        <div className="absolute left-0 right-0 bottom-0 h-0.5 bg-primary" />
-      )}
     </div>
   );
 }
 
 function FolderDragPreview({ folder }: { folder: Folder }) {
   return (
-    <div className="flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm shadow-lg">
+    <div className="flex items-center gap-2 rounded-lg bg-background border border-border px-3 py-2 text-sm shadow-lg">
       <FolderIcon className="h-4 w-4" />
       <span>{folder.name}</span>
     </div>
@@ -436,10 +468,17 @@ export function FolderSidebar({
   const [renamingName, setRenamingName] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const [folderError, setFolderError] = useState<string | null>(null);
+
+  // Get all existing folder names for duplicate checking
+  const existingNames = useMemo(() => getAllFolderNames(folders), [folders]);
 
   const [activeId, setActiveId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
   const [dropPosition, setDropPosition] = useState<DropPosition>(null);
+
+  // Track mouse Y position during drag
+  const mouseYRef = useRef<number>(0);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -450,11 +489,19 @@ export function FolderSidebar({
   );
 
   const handleCreateFolder = async () => {
-    if (!newFolderName.trim()) return;
+    const trimmed = newFolderName.trim();
+    if (!trimmed) return;
+
+    // Check for duplicate name
+    if (existingNames.has(trimmed.toLowerCase())) {
+      setFolderError('A folder with this name already exists');
+      return;
+    }
 
     setCreating(true);
+    setFolderError(null);
     try {
-      await onCreateFolder(newFolderName.trim());
+      await onCreateFolder(trimmed);
       setNewFolderName('');
       setCreateDialogOpen(false);
     } finally {
@@ -463,11 +510,19 @@ export function FolderSidebar({
   };
 
   const handleRenameFolder = async () => {
-    if (!newFolderName.trim() || !renamingName) return;
+    const trimmed = newFolderName.trim();
+    if (!trimmed || !renamingName) return;
+
+    // Check for duplicate name (but allow keeping the same name)
+    if (trimmed.toLowerCase() !== renamingName.toLowerCase() && existingNames.has(trimmed.toLowerCase())) {
+      setFolderError('A folder with this name already exists');
+      return;
+    }
 
     setRenaming(true);
+    setFolderError(null);
     try {
-      await onRenameFolder(renamingName, newFolderName.trim());
+      await onRenameFolder(renamingName, trimmed);
       setNewFolderName('');
       setRenamingName(null);
       setRenameDialogOpen(false);
@@ -479,199 +534,244 @@ export function FolderSidebar({
   const openRenameDialog = (name: string) => {
     setRenamingName(name);
     setNewFolderName(name);
+    setFolderError(null);
     setRenameDialogOpen(true);
+  };
+
+  const openCreateDialog = () => {
+    setNewFolderName('');
+    setFolderError(null);
+    setCreateDialogOpen(true);
   };
 
   // Separate Uncategorized from other folders
   const uncategorizedFolder = folders.find((f) => f.name === 'Uncategorized');
   const userFolders = folders.filter((f) => f.name !== 'Uncategorized');
 
-  // Flatten for sortable context
+  // Flatten for display
   const flattenedFolders = useMemo(
     () => flattenFolders(userFolders, expandedFolders),
     [userFolders, expandedFolders]
   );
-  const sortableIds = useMemo(() => flattenedFolders.map((f) => f.folder.id), [flattenedFolders]);
 
   const handleDragStart = (event: DragStartEvent) => {
     setActiveId(event.active.id as string);
   };
 
-  const handleDragOver = (event: DragOverEvent) => {
-    const { active, over } = event;
+  const handleDragMove = (event: DragMoveEvent) => {
+    // Track the current pointer position
+    const pointerEvent = event.activatorEvent as PointerEvent;
+    if (pointerEvent) {
+      mouseYRef.current = pointerEvent.clientY + (event.delta?.y ?? 0);
+    }
+
+    const { over } = event;
     if (!over) {
       setOverId(null);
       setDropPosition(null);
       return;
     }
 
-    const overId = over.id as string;
-    setOverId(overId);
+    const currentOverId = over.id as string;
+    setOverId(currentOverId);
 
-    // Get the current translated position of the dragged element
-    const activeRect = active.rect.current.translated;
-    const overRect = over.rect;
+    // Get the over element's bounding rect
+    const overElement = document.querySelector(`[data-folder-id="${currentOverId}"]`);
+    if (!overElement) {
+      setDropPosition(null);
+      return;
+    }
 
-    if (activeRect && overRect) {
-      // Use the center of the dragged element to determine position
-      const activeCenterY = activeRect.top + activeRect.height / 2;
-      const overTop = overRect.top;
-      const overHeight = overRect.height;
+    const rect = overElement.getBoundingClientRect();
+    const mouseY = mouseYRef.current;
+    const relativeY = mouseY - rect.top;
+    const ratio = relativeY / rect.height;
 
-      // Calculate where the active center is relative to the over element
-      const relativeY = activeCenterY - overTop;
-      const ratio = relativeY / overHeight;
+    const activeFolder = findFolderById(folders, activeId!);
+    const overFolder = findFolderById(folders, currentOverId);
 
-      const activeFolder = findFolderById(folders, active.id as string);
-      const overFolder = findFolderById(folders, overId);
+    if (!activeFolder || !overFolder) {
+      setDropPosition(null);
+      return;
+    }
 
-      if (!activeFolder || !overFolder) {
-        setDropPosition(null);
-        return;
-      }
+    // Check constraints
+    const isSelf = activeId === currentOverId;
+    const isDescendantOfActive = isDescendant(folders, currentOverId, activeId!);
+    const canNestInside =
+      overFolder.level < 3 && overFolder.level + getMaxDepth(activeFolder) <= 3;
 
-      // Check constraints
-      const isSelf = active.id === overId;
-      const isDescendantOfActive = isDescendant(folders, overId, active.id as string);
-      const canNestInside =
-        overFolder.level < 3 && overFolder.level + getMaxDepth(activeFolder) <= 3;
+    if (isSelf || isDescendantOfActive) {
+      setDropPosition(null);
+      return;
+    }
 
-      if (isSelf || isDescendantOfActive) {
-        setDropPosition(null);
-        return;
-      }
-
-      if (ratio < 0.3) {
-        setDropPosition('before');
-      } else if (ratio > 0.7) {
-        setDropPosition('after');
-      } else if (canNestInside) {
-        setDropPosition('inside');
-      } else {
-        // If can't nest, pick closest edge
-        setDropPosition(ratio < 0.5 ? 'before' : 'after');
-      }
+    // Determine drop position based on mouse position within the element
+    if (ratio < 0.3) {
+      setDropPosition('before');
+    } else if (ratio > 0.7) {
+      setDropPosition('after');
+    } else if (canNestInside) {
+      setDropPosition('inside');
+    } else {
+      setDropPosition(ratio < 0.5 ? 'before' : 'after');
     }
   };
 
   const handleDragEnd = async (event: DragEndEvent) => {
-    const { active, over } = event;
+    const { over } = event;
 
-    // Capture drop position before clearing state
     const finalDropPosition = dropPosition;
+    const finalOverId = overId;
 
     setActiveId(null);
     setOverId(null);
     setDropPosition(null);
 
-    if (!over || active.id === over.id || !finalDropPosition) return;
-
-    const activeId = active.id as string;
-    const targetId = over.id as string;
+    if (!over || !finalOverId || !finalDropPosition || activeId === finalOverId) return;
 
     try {
       if (finalDropPosition === 'inside') {
-        // Nest inside target folder
-        await onNestFolder(activeId, targetId);
+        await onNestFolder(activeId!, finalOverId);
       } else if (finalDropPosition === 'before') {
-        // Move to root and place before target
-        await onNestFolder(activeId, null);
-        await onReorderFolder(activeId, targetId, undefined);
+        await onNestFolder(activeId!, null);
+        await onReorderFolder(activeId!, finalOverId, undefined);
       } else if (finalDropPosition === 'after') {
-        // Move to root and place after target
-        await onNestFolder(activeId, null);
-        await onReorderFolder(activeId, undefined, targetId);
+        await onNestFolder(activeId!, null);
+        await onReorderFolder(activeId!, undefined, finalOverId);
       }
     } catch (err) {
       console.error('Failed to move folder:', err);
     }
   };
 
+  const handleDragCancel = () => {
+    setActiveId(null);
+    setOverId(null);
+    setDropPosition(null);
+  };
+
   const activeFolder = activeId ? findFolderById(folders, activeId) : null;
 
   if (collapsed) {
     return (
-      <div className="flex flex-col items-center py-4 px-2 border-r bg-muted/20">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8 text-muted-foreground hover:text-foreground transition-colors"
-          onClick={onToggleCollapsed}
-        >
-          <PanelLeftOpenIcon className="h-4 w-4" />
-        </Button>
-      </div>
+      <TooltipProvider delayDuration={0}>
+        <div className="flex flex-col items-center py-4 px-2 border-r bg-muted/20">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 text-muted-foreground hover:text-foreground transition-colors"
+                onClick={onToggleCollapsed}
+              >
+                <PanelLeftOpenIcon className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              <p>Open sidebar</p>
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      </TooltipProvider>
     );
   }
 
   return (
-    <div className="flex flex-col w-56 border-r bg-muted/20">
+    <div className="flex flex-col w-56 border-r bg-muted/20 overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2.5 border-b border-border/50">
-        <span className="text-sm font-medium text-foreground/80">Collections</span>
-        <div className="flex items-center gap-0.5">
-          <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
-            <DialogTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
-              >
-                <PlusIcon className="h-4 w-4" />
-              </Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Create Folder</DialogTitle>
-              </DialogHeader>
-              <div className="space-y-4 pt-4">
-                <Input
-                  placeholder="Folder name"
-                  value={newFolderName}
-                  onChange={(e) => setNewFolderName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      void handleCreateFolder();
-                    }
-                  }}
-                  autoFocus
-                />
-                <div className="flex justify-end gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      setNewFolderName('');
-                      setCreateDialogOpen(false);
+      <TooltipProvider delayDuration={0}>
+        <div className="flex items-center justify-between px-3 py-2.5 border-b border-border/50">
+          <span className="text-sm font-medium text-foreground/80">Collections</span>
+          <div className="flex items-center gap-0.5">
+            <Dialog open={createDialogOpen} onOpenChange={(open) => {
+              setCreateDialogOpen(open);
+              if (!open) setFolderError(null);
+            }}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <DialogTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+                    >
+                      <PlusIcon className="h-4 w-4" />
+                    </Button>
+                  </DialogTrigger>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>New folder</p>
+                </TooltipContent>
+              </Tooltip>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Create Folder</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4 pt-4">
+                  <Input
+                    placeholder="Folder name"
+                    value={newFolderName}
+                    onChange={(e) => {
+                      setNewFolderName(e.target.value);
+                      setFolderError(null);
                     }}
-                  >
-                    Cancel
-                  </Button>
-                  <Button onClick={handleCreateFolder} disabled={creating || !newFolderName.trim()}>
-                    {creating ? 'Creating...' : 'Create'}
-                  </Button>
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        void handleCreateFolder();
+                      }
+                    }}
+                    autoFocus
+                  />
+                  {folderError && (
+                    <p className="text-sm text-destructive">{folderError}</p>
+                  )}
+                  <div className="flex justify-end gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setNewFolderName('');
+                        setFolderError(null);
+                        setCreateDialogOpen(false);
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                    <Button onClick={handleCreateFolder} disabled={creating || !newFolderName.trim()}>
+                      {creating ? 'Creating...' : 'Create'}
+                    </Button>
+                  </div>
                 </div>
-              </div>
-            </DialogContent>
-          </Dialog>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
-            onClick={onToggleCollapsed}
-          >
-            <PanelLeftCloseIcon className="h-4 w-4" />
-          </Button>
+              </DialogContent>
+            </Dialog>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+                  onClick={onToggleCollapsed}
+                >
+                  <PanelLeftCloseIcon className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>Close sidebar</p>
+              </TooltipContent>
+            </Tooltip>
+          </div>
         </div>
-      </div>
+      </TooltipProvider>
 
-      <ScrollArea className="flex-1">
-        <div className="py-2 px-2">
-          {/* All Clips - Primary */}
+      <ScrollArea className="flex-1 w-full min-w-0">
+        <div className="py-2 px-2 w-full overflow-hidden">
+          {/* All - Primary */}
           <button
             type="button"
-            className={`group relative flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm cursor-pointer transition-colors ${
+            style={{ paddingLeft: 12 }}
+            className={`group relative flex w-full items-center gap-2 rounded-lg pr-3 py-2 text-sm cursor-pointer overflow-hidden transition-colors ${
               selectedFolder === null
-                ? 'bg-muted text-foreground'
+                ? 'bg-primary/15 text-foreground'
                 : 'text-foreground/80 hover:bg-accent/40 hover:text-foreground'
             }`}
             onClick={() => onSelectFolder(null)}
@@ -681,23 +781,26 @@ export function FolderSidebar({
                 selectedFolder === null ? 'text-foreground' : 'text-muted-foreground group-hover:text-foreground/70'
               }`}
             />
-            <span className="flex-1 truncate text-left font-medium">All</span>
-            <span
-              className={`text-xs tabular-nums transition-colors ${
-                selectedFolder === null ? 'text-foreground/70' : 'text-muted-foreground'
-              }`}
-            >
-              {totalThreadCount}
-            </span>
+            <span className="flex-1 min-w-0 truncate text-left font-medium">All</span>
+            <div className="w-8 shrink-0 flex items-center justify-end">
+              <span
+                className={`text-xs tabular-nums transition-colors ${
+                  selectedFolder === null ? 'text-foreground/70' : 'text-muted-foreground'
+                }`}
+              >
+                {totalThreadCount}
+              </span>
+            </div>
           </button>
 
           {/* Uncategorized - Secondary */}
           {uncategorizedFolder && (
             <button
               type="button"
-              className={`group relative flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm cursor-pointer transition-colors ${
+              style={{ paddingLeft: 12 }}
+              className={`group relative flex w-full items-center gap-2 rounded-lg pr-3 py-2 text-sm cursor-pointer overflow-hidden transition-colors ${
                 selectedFolder === 'Uncategorized'
-                  ? 'bg-muted text-foreground'
+                  ? 'bg-primary/15 text-foreground'
                   : 'text-foreground/80 hover:bg-accent/40 hover:text-foreground'
               }`}
               onClick={() => onSelectFolder('Uncategorized')}
@@ -709,14 +812,16 @@ export function FolderSidebar({
                     : 'text-muted-foreground group-hover:text-foreground/70'
                 }`}
               />
-              <span className="flex-1 truncate text-left">Unsorted</span>
-              <span
-                className={`text-xs tabular-nums transition-colors ${
-                  selectedFolder === 'Uncategorized' ? 'text-foreground/70' : 'text-muted-foreground'
-                }`}
-              >
-                {uncategorizedFolder.threadCount}
-              </span>
+              <span className="flex-1 min-w-0 truncate text-left">Unsorted</span>
+              <div className="w-8 shrink-0 flex items-center justify-end">
+                <span
+                  className={`text-xs tabular-nums transition-colors ${
+                    selectedFolder === 'Uncategorized' ? 'text-foreground/70' : 'text-muted-foreground'
+                  }`}
+                >
+                  {uncategorizedFolder.threadCount}
+                </span>
+              </div>
             </button>
           )}
 
@@ -726,15 +831,14 @@ export function FolderSidebar({
           {/* User Folders with Drag and Drop */}
           <DndContext
             sensors={sensors}
-            collisionDetection={closestCenter}
             onDragStart={handleDragStart}
-            onDragOver={handleDragOver}
+            onDragMove={handleDragMove}
             onDragEnd={handleDragEnd}
+            onDragCancel={handleDragCancel}
           >
-            <SortableContext items={sortableIds} strategy={verticalListSortingStrategy}>
-              {flattenedFolders.map(({ folder, depth }) => (
-                <SortableFolderItem
-                  key={folder.id}
+            {flattenedFolders.map(({ folder, depth }) => (
+              <div key={folder.id} data-folder-id={folder.id} className="w-full overflow-hidden">
+                <DraggableFolderItem
                   folder={folder}
                   depth={depth}
                   isSelected={selectedFolder === folder.name}
@@ -747,9 +851,9 @@ export function FolderSidebar({
                   onRename={() => openRenameDialog(folder.name)}
                   onDelete={() => onDeleteFolder(folder.name)}
                 />
-              ))}
-            </SortableContext>
-            <DragOverlay>
+              </div>
+            ))}
+            <DragOverlay dropAnimation={null}>
               {activeFolder && <FolderDragPreview folder={activeFolder} />}
             </DragOverlay>
           </DndContext>
@@ -757,7 +861,10 @@ export function FolderSidebar({
       </ScrollArea>
 
       {/* Rename Dialog */}
-      <Dialog open={renameDialogOpen} onOpenChange={setRenameDialogOpen}>
+      <Dialog open={renameDialogOpen} onOpenChange={(open) => {
+        setRenameDialogOpen(open);
+        if (!open) setFolderError(null);
+      }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Rename Folder</DialogTitle>
@@ -766,7 +873,10 @@ export function FolderSidebar({
             <Input
               placeholder="New folder name"
               value={newFolderName}
-              onChange={(e) => setNewFolderName(e.target.value)}
+              onChange={(e) => {
+                setNewFolderName(e.target.value);
+                setFolderError(null);
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
                   void handleRenameFolder();
@@ -774,12 +884,16 @@ export function FolderSidebar({
               }}
               autoFocus
             />
+            {folderError && (
+              <p className="text-sm text-destructive">{folderError}</p>
+            )}
             <div className="flex justify-end gap-2">
               <Button
                 variant="outline"
                 onClick={() => {
                   setNewFolderName('');
                   setRenamingName(null);
+                  setFolderError(null);
                   setRenameDialogOpen(false);
                 }}
               >

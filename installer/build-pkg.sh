@@ -44,11 +44,9 @@ cat > "$SCRIPT_DIR/scripts/postinstall" << 'POSTINSTALL'
 # This ID is the same across all Chromium browsers
 EXTENSION_ID="lgjhokmhniplbigjblidponoailcldhd"
 
-# Get the current user's home directory
-USER_HOME="$HOME"
-if [ -z "$USER_HOME" ] || [ "$USER_HOME" = "/" ]; then
-    USER_HOME=$(eval echo ~$USER)
-fi
+# Get the actual logged-in user (not root, which runs the installer)
+INSTALLING_USER=$(stat -f '%Su' /dev/console)
+USER_HOME=$(eval echo ~$INSTALLING_USER)
 
 # Install locations
 JOT_DIR="$USER_HOME/Library/Application Support/Jot"
@@ -59,8 +57,10 @@ mkdir -p "$JOT_DIR"
 cp /tmp/jot-install/jot-host "$BINARY_PATH"
 chmod 755 "$BINARY_PATH"
 
-# Create config directory
+# Create config directory and ensure correct ownership
 mkdir -p "$USER_HOME/.jot"
+chown -R "$INSTALLING_USER" "$USER_HOME/.jot"
+chown -R "$INSTALLING_USER" "$JOT_DIR"
 
 # Manifest content
 MANIFEST_CONTENT=$(cat << MANIFEST

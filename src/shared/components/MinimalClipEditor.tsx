@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type SVGProps } from 'react';
+import { useEffect, useRef, useState, type SVGProps, type ReactNode } from 'react';
 import {
   appendComment,
   deleteComment,
@@ -7,11 +7,22 @@ import {
   type ClipComment,
   type ClipThread,
   type ClipMetadata,
+  type Folder,
 } from '../storage';
 import { getCachedThread, setCachedThread, clearCachedThread } from '../threadCache';
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '../../components/ui/tooltip';
 import { formatAbsolute, formatRelativeOrAbsolute } from '../datetime';
 import { formatDisplayUrl, stripWwwPrefix } from '../url';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../../components/ui/select';
+import { Folder as FolderIcon, ChevronDown } from 'lucide-react';
+
+type FlattenedFolder = { folder: Folder; depth: number };
 
 type MinimalClipEditorProps = {
   url: string;
@@ -24,6 +35,10 @@ type MinimalClipEditorProps = {
   onCommentAdded?: (thread: ClipThread) => void;
   onCommentDeleted?: (thread: ClipThread | undefined) => void;
   defaultFolder?: string;
+  /** Folder selector props - if provided, shows inline folder picker */
+  flattenedFolders?: FlattenedFolder[];
+  selectedFolder?: string;
+  onFolderChange?: (folder: string) => void;
 };
 
 function HistoryIcon(props: SVGProps<SVGSVGElement>) {
@@ -354,6 +369,49 @@ async function fetchPreviewImageFromTab(tabId: number): Promise<string | null> {
           return matches > 0 ? 180 + matches * 60 : 0;
         };
 
+        // Get URL without query parameters for comparison.
+        const getUrlWithoutQuery = (url: string): string | null => {
+          try {
+            const parsed = new URL(url);
+            return `${parsed.origin}${parsed.pathname}`;
+          } catch {
+            return null;
+          }
+        };
+
+        // Check if a URL corresponds to an image rendered small on the page.
+        // Returns true only if the LARGEST instance is smaller than minSize.
+        // This handles cases where the same image appears at multiple sizes
+        // (e.g., small avatar in nav + larger version elsewhere).
+        // Matches by pathname (ignoring query params) since sites like GitHub
+        // use different query params for the same image at different sizes.
+        const isRenderedTooSmall = (imageUrl: string, minSize: number = 100): boolean => {
+          const normalizedUrl = normalize(imageUrl);
+          if (!normalizedUrl) return false;
+          const baseUrl = getUrlWithoutQuery(normalizedUrl);
+          if (!baseUrl) return false;
+
+          let largestSize = -1;
+          for (const img of Array.from(document.images)) {
+            const imgSrc = normalize(img.currentSrc || img.src);
+            if (!imgSrc) continue;
+            const imgBaseUrl = getUrlWithoutQuery(imgSrc);
+            if (imgBaseUrl !== baseUrl) continue;
+
+            const rect = img.getBoundingClientRect();
+            const size = Math.max(rect.width, rect.height);
+            if (size > largestSize) {
+              largestSize = size;
+            }
+          }
+
+          // If no matching image found on page, don't skip it
+          if (largestSize < 0) return false;
+
+          // Skip only if the largest instance is still too small
+          return largestSize < minSize;
+        };
+
         const addMetaTags = () => {
           const selectors = [
             'meta[property="og:image:secure_url" i]',
@@ -369,7 +427,13 @@ async function fetchPreviewImageFromTab(tabId: number): Promise<string | null> {
           for (const selector of selectors) {
             const node = document.querySelector<HTMLMetaElement>(selector);
             if (!node) continue;
-            boostCandidate(node.content, 1200);
+            const imageUrl = node.content;
+            // If the meta tag image is rendered small on the page, skip it entirely.
+            // This prevents picking up small avatars/icons that sites set as og:image.
+            if (isRenderedTooSmall(imageUrl)) {
+              continue;
+            }
+            boostCandidate(imageUrl, 1200);
           }
         };
 
@@ -735,6 +799,9 @@ export function MinimalClipEditor({
   onCommentAdded,
   onCommentDeleted,
   defaultFolder = '/',
+  flattenedFolders,
+  selectedFolder,
+  onFolderChange,
 }: MinimalClipEditorProps) {
   const [thread, setThread] = useState<ClipThread | undefined>(initialThread ?? undefined);
   const [draft, setDraft] = useState('');
@@ -1217,7 +1284,32 @@ export function MinimalClipEditor({
           />
         </div>
 
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex items-center justify-between gap-2">
+          {flattenedFolders && flattenedFolders.length > 0 && onFolderChange ? (
+            <Select value={selectedFolder} onValueChange={onFolderChange}>
+              <SelectTrigger className="h-auto border-0 bg-transparent p-0 shadow-none hover:bg-transparent focus:ring-0 text-xs text-muted-foreground gap-1 max-w-[140px]">
+                <FolderIcon className="h-3 w-3 shrink-0" />
+                <span className="truncate">{selectedFolder || 'Uncategorized'}</span>
+              </SelectTrigger>
+              <SelectContent className="max-w-[280px]">
+                <SelectItem value="Uncategorized">Uncategorized</SelectItem>
+                {flattenedFolders.map(({ folder, depth }) => (
+                  <SelectItem key={folder.id} value={folder.name} className="overflow-hidden">
+                    <span className="flex items-center overflow-hidden">
+                      {depth > 0 && (
+                        <span className="text-muted-foreground/50 shrink-0" style={{ marginLeft: (depth - 1) * 10 }}>
+                          └
+                        </span>
+                      )}
+                      <span className="truncate">{folder.name}</span>
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <div />
+          )}
           <button
             type="button"
             onClick={handleSubmit}

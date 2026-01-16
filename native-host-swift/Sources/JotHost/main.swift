@@ -646,13 +646,16 @@ func handleSetConfig(vaultPath: String?, commentFolder: String?) -> Response {
         return Response(id: 0, ok: false, data: nil, error: "vaultPath is required", code: "INVALID_INPUT")
     }
 
+    // Expand tilde to home directory
+    let expandedPath = (vaultPath as NSString).expandingTildeInPath
+
     // Security: Reject path traversal attempts
-    guard !vaultPath.contains("..") else {
+    guard !expandedPath.contains("..") else {
         return Response(id: 0, ok: false, data: nil, error: "Path cannot contain '..'", code: "INVALID_PATH")
     }
 
     // Security: Resolve symlinks and normalize path
-    let resolvedURL = URL(fileURLWithPath: vaultPath).standardized.resolvingSymlinksInPath()
+    let resolvedURL = URL(fileURLWithPath: expandedPath).standardized.resolvingSymlinksInPath()
     let resolvedPath = resolvedURL.path
 
     // Security: Require vault to be within user's home directory
