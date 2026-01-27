@@ -213,12 +213,62 @@ struct AnyCodable: Encodable {
 
 // MARK: - URL Normalization
 
+// Tracking parameters to strip (must match JS implementation in storage.ts)
+let trackingParams: Set<String> = [
+    // Google Analytics / Ads / Search
+    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+    "utm_id", "utm_source_platform", "utm_creative_format", "utm_marketing_tactic",
+    "gclid", "gclsrc", "dclid", "gbraid", "wbraid",
+    "srsltid",  // Google Search Results Link Tracking ID
+    "_ga", "_gl",
+
+    // Facebook / Instagram
+    "fbclid", "fb_action_ids", "fb_action_types", "fb_source", "fb_ref",
+    "igsh", "igshid",  // Instagram share tracking
+
+    // Microsoft / Bing
+    "msclkid",
+
+    // Twitter/X
+    "twclid",
+
+    // YouTube / Spotify
+    "si",  // Share tracking (YouTube, Spotify)
+    "feature",  // YouTube share feature param
+
+    // Generic tracking
+    "ref", "source", "campaign",
+    "mc_cid", "mc_eid",  // Mailchimp
+    "oly_enc_id", "oly_anon_id",  // Omeda
+    "_hsenc", "_hsmi", "hsCtaTracking",  // HubSpot
+    "vero_id", "vero_conv",  // Vero
+    "nr_email_referer",  // NewRelic
+    "mkt_tok",  // Marketo
+    "trk", "trkInfo",  // LinkedIn
+]
+
 func normalizeUrl(_ url: String) -> String {
     guard var components = URLComponents(string: url) else { return url }
+
+    // Remove fragment
     components.fragment = nil
-    if let queryItems = components.queryItems {
-        components.queryItems = queryItems.sorted { $0.name < $1.name }
+
+    // Remove www. prefix from hostname
+    if let host = components.host, host.hasPrefix("www.") {
+        components.host = String(host.dropFirst(4))
     }
+
+    // Strip tracking params and sort remaining
+    if let queryItems = components.queryItems {
+        let filtered = queryItems.filter { !trackingParams.contains($0.name) }
+        components.queryItems = filtered.isEmpty ? nil : filtered.sorted { $0.name < $1.name }
+    }
+
+    // Remove trailing slash from path (except root)
+    if components.path.count > 1 && components.path.hasSuffix("/") {
+        components.path = String(components.path.dropLast())
+    }
+
     return components.string ?? url
 }
 
@@ -419,6 +469,78 @@ func findEntry(in doc: ParsedDocument, url: String) -> (folderIndex: Int, entryI
                 return (fi, ei)
             }
         }
+    }
+    return nil
+}
+
+// Result type for recursive entry search
+struct EntryLocation {
+    var folderId: String
+    var folderName: String
+    var entryIndex: Int
+}
+
+// Find an entry recursively in any folder (including nested)
+func findEntryRecursive(in doc: ParsedDocument, url: String) -> EntryLocation? {
+    func search(folders: [ParsedFolder], parentPath: String?) -> EntryLocation? {
+        for folder in folders {
+            let folderId = folder.id(parentPath: parentPath)
+            for (ei, entry) in folder.entries.enumerated() {
+                if entry.url == url {
+                    return EntryLocation(folderId: folderId, folderName: folder.name, entryIndex: ei)
+                }
+            }
+            let childPath = folder.path(parentPath: parentPath)
+            if let found = search(folders: folder.children, parentPath: childPath) {
+                return found
+            }
+        }
+        return nil
+    }
+    return search(folders: doc.folders, parentPath: nil)
+}
+
+// Remove an entry from a folder by folder ID, returns the removed entry
+func removeEntryFromFolder(_ doc: inout ParsedDocument, folderId: String, entryIndex: Int) -> ParsedEntry? {
+    func removeFrom(folders: inout [ParsedFolder], parentPath: String?) -> ParsedEntry? {
+        for i in folders.indices {
+            let id = folders[i].id(parentPath: parentPath)
+            if id == folderId && entryIndex < folders[i].entries.count {
+                return folders[i].entries.remove(at: entryIndex)
+            }
+            let childPath = folders[i].path(parentPath: parentPath)
+            if let removed = removeFrom(folders: &folders[i].children, parentPath: childPath) {
+                return removed
+            }
+        }
+        return nil
+    }
+    return removeFrom(folders: &doc.folders, parentPath: nil)
+}
+
+// Add an entry to a folder by folder ID
+func addEntryToFolder(_ doc: inout ParsedDocument, folderId: String, entry: ParsedEntry) -> Bool {
+    func addTo(folders: inout [ParsedFolder], parentPath: String?) -> Bool {
+        for i in folders.indices {
+            let id = folders[i].id(parentPath: parentPath)
+            if id == folderId {
+                folders[i].entries.append(entry)
+                return true
+            }
+            let childPath = folders[i].path(parentPath: parentPath)
+            if addTo(folders: &folders[i].children, parentPath: childPath) {
+                return true
+            }
+        }
+        return false
+    }
+    return addTo(folders: &doc.folders, parentPath: nil)
+}
+
+// Get folder name by ID
+func getFolderNameById(_ doc: ParsedDocument, id: String) -> String? {
+    if let location = findFolderById(doc, id: id) {
+        return location.folder.name
     }
     return nil
 }
@@ -1131,7 +1253,7 @@ func handleDeleteFolder(path: String?, recursive: Bool?) -> Response {
 }
 
 func handleMoveThread(url: String?, toFolder: String?) -> Response {
-    guard let url = url, let targetFolder = toFolder, !targetFolder.isEmpty, let config = Config.read() else {
+    guard let url = url, let targetFolderId = toFolder, !targetFolderId.isEmpty, let config = Config.read() else {
         return Response(id: 0, ok: false, data: nil, error: "url and toFolder are required", code: "INVALID_INPUT")
     }
 
@@ -1139,30 +1261,37 @@ func handleMoveThread(url: String?, toFolder: String?) -> Response {
     var doc = readDocument(config: config)
     let meta = Metadata.read(from: config.metadataFile)
 
-    guard let (fi, ei) = findEntry(in: doc, url: normalized) else {
+    // Find entry recursively (searches nested folders too)
+    guard let entryLocation = findEntryRecursive(in: doc, url: normalized) else {
         return Response(id: 0, ok: false, data: nil, error: "Thread not found", code: "NOT_FOUND")
     }
 
-    // Find target folder
-    guard let targetFi = doc.folders.firstIndex(where: { $0.name == targetFolder }) else {
+    // Find target folder by ID (searches nested folders too)
+    guard let targetLocation = findFolderById(doc, id: targetFolderId) else {
         return Response(id: 0, ok: false, data: nil, error: "Target folder does not exist", code: "NOT_FOUND")
     }
 
-    if fi == targetFi {
+    if entryLocation.folderId == targetFolderId {
         // Already in target folder
-        let entry = doc.folders[fi].entries[ei]
-        let thread = entryToThread(entry, folder: targetFolder, metadata: meta)
+        let entry = targetLocation.folder.entries[entryLocation.entryIndex]
+        let thread = entryToThread(entry, folder: targetLocation.folder.name, metadata: meta)
         return Response(id: 0, ok: true, data: AnyCodable(threadToDict(thread)), error: nil, code: nil)
     }
 
-    // Move entry
-    let entry = doc.folders[fi].entries.remove(at: ei)
-    doc.folders[targetFi].entries.append(entry)
+    // Remove entry from source folder
+    guard let entry = removeEntryFromFolder(&doc, folderId: entryLocation.folderId, entryIndex: entryLocation.entryIndex) else {
+        return Response(id: 0, ok: false, data: nil, error: "Failed to remove entry from source folder", code: "IO_ERROR")
+    }
+
+    // Add entry to target folder
+    guard addEntryToFolder(&doc, folderId: targetFolderId, entry: entry) else {
+        return Response(id: 0, ok: false, data: nil, error: "Failed to add entry to target folder", code: "IO_ERROR")
+    }
 
     do {
         try writeDocument(doc, config: config)
 
-        let thread = entryToThread(entry, folder: targetFolder, metadata: meta)
+        let thread = entryToThread(entry, folder: targetLocation.folder.name, metadata: meta)
         return Response(id: 0, ok: true, data: AnyCodable(threadToDict(thread)), error: nil, code: nil)
     } catch {
         return Response(id: 0, ok: false, data: nil, error: error.localizedDescription, code: "IO_ERROR")
@@ -1360,36 +1489,64 @@ func handleReorderFolder(folderId: String?, beforeId: String?, afterId: String?)
         return Response(id: 0, ok: false, data: nil, error: "Folder not found", code: "NOT_FOUND")
     }
 
-    // Determine target position - folder should stay at same level, just change order
-    // This is simpler: remove from current position, insert at new position in same parent
+    // Determine target parent based on beforeId or afterId
+    // The target folder tells us which parent's children array to reorder in
+    var targetParentPath: String? = nil
+    var targetFolderName: String? = nil
+    var insertBefore = true
 
-    // For now, implement simple reordering at root level only
-    // Full nested reordering would require tracking parent IDs in the request
+    if let beforeId = beforeId, let beforeLoc = findFolderById(doc, id: beforeId) {
+        targetParentPath = beforeLoc.parentPath
+        targetFolderName = beforeLoc.folder.name
+        insertBefore = true
+    } else if let afterId = afterId, let afterLoc = findFolderById(doc, id: afterId) {
+        targetParentPath = afterLoc.parentPath
+        targetFolderName = afterLoc.folder.name
+        insertBefore = false
+    } else {
+        // No target specified, nothing to do
+        return Response(id: 0, ok: false, data: nil, error: "beforeId or afterId required", code: "INVALID_INPUT")
+    }
 
-    // Remove folder
+    // Remove folder from current location
     guard let removedFolder = removeFolderById(&doc, id: folderId) else {
         return Response(id: 0, ok: false, data: nil, error: "Failed to remove folder", code: "INTERNAL_ERROR")
     }
 
-    // Find insert position based on beforeId or afterId
-    var insertIndex = doc.folders.count  // Default: append at end
+    // Insert at the correct position in the target parent
+    func insertIntoParent(folders: inout [ParsedFolder], parentPath: String?, level: Int) -> Bool {
+        if parentPath == targetParentPath {
+            // This is the correct level - find the target folder and insert
+            var insertIndex = folders.count
+            for (i, f) in folders.enumerated() {
+                if f.name == targetFolderName {
+                    insertIndex = insertBefore ? i : i + 1
+                    break
+                }
+            }
+            var folderToInsert = removedFolder
+            folderToInsert.level = level
+            updateLevels(&folderToInsert, baseLevel: level)
+            folders.insert(folderToInsert, at: min(insertIndex, folders.count))
+            return true
+        }
 
-    if let beforeId = beforeId, let beforeLoc = findFolderById(doc, id: beforeId) {
-        // Insert before this folder (only works for root level for now)
-        if let idx = doc.folders.firstIndex(where: { $0.name == beforeLoc.folder.name }) {
-            insertIndex = idx
+        // Search in children
+        for i in folders.indices {
+            let childPath = folders[i].path(parentPath: parentPath)
+            if insertIntoParent(folders: &folders[i].children, parentPath: childPath, level: level + 1) {
+                return true
+            }
         }
-    } else if let afterId = afterId, let afterLoc = findFolderById(doc, id: afterId) {
-        // Insert after this folder
-        if let idx = doc.folders.firstIndex(where: { $0.name == afterLoc.folder.name }) {
-            insertIndex = idx + 1
-        }
+        return false
     }
 
-    // Insert at new position
-    var folderToInsert = removedFolder
-    folderToInsert.level = 1  // Root level
-    doc.folders.insert(folderToInsert, at: min(insertIndex, doc.folders.count))
+    // Try to insert - targetParentPath is nil for root level
+    if !insertIntoParent(folders: &doc.folders, parentPath: nil, level: 1) {
+        // Rollback: put it back at root
+        doc.folders.append(removedFolder)
+        return Response(id: 0, ok: false, data: nil, error: "Failed to insert folder at target position", code: "INTERNAL_ERROR")
+    }
 
     do {
         try writeDocument(doc, config: config)

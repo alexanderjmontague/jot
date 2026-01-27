@@ -17,6 +17,7 @@ import { Card, CardContent } from '../../src/components/ui/card';
 import { Input } from '../../src/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '../../src/components/ui/tooltip';
 import {
+  appendComment,
   deleteComment,
   deleteThread,
   getAllThreads,
@@ -43,16 +44,20 @@ import {
   DropdownMenuTrigger,
 } from '../../src/components/ui/dropdown-menu';
 import { DownloadHelperView } from '../../src/shared/components/DownloadHelperView';
+import { ImportBookmarksView } from '../../src/shared/components/ImportBookmarksView';
+import { flattenChromeBookmarks, type ChromeBookmarkNode } from '../../src/shared/bookmarks';
 import { formatAbsolute, formatRelativeOrAbsolute } from '../../src/shared/datetime';
 import { formatDisplayUrl, stripWwwPrefix, getBaseDomainInfo } from '../../src/shared/url';
-import { Loader2, RefreshCw, Settings, CheckCircle2, AlertCircle, Globe, AlertTriangle, Github, GripVertical } from 'lucide-react';
+import { Loader2, RefreshCw, Settings, CheckCircle2, AlertCircle, Globe, AlertTriangle, Github, GripVertical, MessageSquarePlus } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
 } from '../../src/components/ui/dialog';
+import { Textarea } from '../../src/components/ui/textarea';
 import { Label } from '../../src/components/ui/label';
 import { getConfig, setVaultPath } from '../../src/shared/storage';
 
@@ -61,24 +66,8 @@ type FaviconFailures = Record<string, true>;
 type PreviewFailures = Record<string, true>;
 type PreviewFit = 'cover' | 'contain';
 type PreviewFits = Record<string, PreviewFit>;
-type AppState = 'loading' | 'not-installed' | 'setup' | 'ready' | 'error';
+type AppState = 'loading' | 'not-installed' | 'setup' | 'import-prompt' | 'ready' | 'error';
 
-// Flatten folder tree for dropdown display (shows all folders with depth info)
-function flattenFoldersForDropdown(folders: Folder[]): { folder: Folder; depth: number }[] {
-  const result: { folder: Folder; depth: number }[] = [];
-
-  function traverse(items: Folder[], depth: number) {
-    for (const folder of items) {
-      result.push({ folder, depth });
-      if (folder.children.length > 0) {
-        traverse(folder.children, depth + 1);
-      }
-    }
-  }
-
-  traverse(folders, 0);
-  return result;
-}
 
 const PREVIEW_FRAME_ASPECT = 1.2;
 const PREVIEW_SIMILARITY_TOLERANCE = 0.25;
@@ -139,25 +128,6 @@ function TrashIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
-function FolderMoveIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      {...props}
-    >
-      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-      <path d="M12 10v6" />
-      <path d="m15 13-3 3-3-3" />
-    </svg>
-  );
-}
-
 function XIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg
@@ -207,15 +177,9 @@ function DraggableThreadCard({ thread, children, isDragDisabled, dropPosition }:
     id: `thread-drop:${thread.url}`,
   });
 
-  // Combine refs
-  const setNodeRef = (node: HTMLElement | null) => {
-    setDragRef(node);
-    setDropRef(node);
-  };
-
   return (
     <div
-      ref={setNodeRef}
+      ref={setDropRef}
       data-thread-url={thread.url}
       className={`group/drag relative ${isDragging ? 'opacity-30' : ''}`}
     >
@@ -231,6 +195,7 @@ function DraggableThreadCard({ thread, children, isDragDisabled, dropPosition }:
 
       {/* Drag handle - visible on hover */}
       <div
+        ref={setDragRef}
         {...attributes}
         {...listeners}
         className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-full pr-1 opacity-0 group-hover/drag:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
@@ -347,64 +312,6 @@ function useThreads() {
 type SettingsStatus = 'idle' | 'loading' | 'saving' | 'success' | 'error';
 type ImportStatus = 'idle' | 'confirming' | 'importing' | 'done' | 'error';
 
-type ChromeBookmarkNode = {
-  id: string;
-  title: string;
-  url?: string;
-  children?: ChromeBookmarkNode[];
-};
-
-function flattenChromeBookmarks(nodes: ChromeBookmarkNode[]): ImportBookmark[] {
-  const results: ImportBookmark[] = [];
-  const topLevelContainers = new Set(['Bookmarks Bar', 'Other Bookmarks', 'Mobile Bookmarks', 'Other bookmarks', 'Mobile bookmarks']);
-
-  function traverse(children: ChromeBookmarkNode[], folderPath: string[], depth: number) {
-    for (const node of children) {
-      if (node.url) {
-        // It's a bookmark - filter non-http(s) URLs
-        if (!node.url.startsWith('http://') && !node.url.startsWith('https://')) {
-          continue;
-        }
-
-        let folder = 'Uncategorized';
-        if (folderPath.length > 0) {
-          // Max 3 levels of folder path
-          folder = folderPath.slice(0, 3).join('/');
-        }
-
-        let faviconUrl: string | undefined;
-        try {
-          const domain = new URL(node.url).hostname;
-          faviconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
-        } catch {
-          // skip favicon
-        }
-
-        results.push({
-          url: node.url,
-          title: node.title || undefined,
-          faviconUrl,
-          folder,
-        });
-      } else if (node.children) {
-        // It's a folder
-        if (depth === 0 && topLevelContainers.has(node.title)) {
-          // Skip top-level containers as folder names, just traverse children
-          traverse(node.children, folderPath, depth + 1);
-        } else {
-          // Flatten at max 3 levels
-          const newPath = folderPath.length < 3
-            ? [...folderPath, node.title]
-            : folderPath;
-          traverse(node.children, newPath, depth + 1);
-        }
-      }
-    }
-  }
-
-  traverse(nodes, [], 0);
-  return results;
-}
 
 function SettingsDialog() {
   const [open, setOpen] = useState(false);
@@ -770,6 +677,11 @@ function ListApp() {
   const [threadDropPosition, setThreadDropPosition] = useState<DropPosition>(null);
   const mouseYRef = useRef<number>(0);
 
+  // Comment dialog state
+  const [commentDialogUrl, setCommentDialogUrl] = useState<string | null>(null);
+  const [commentDraft, setCommentDraft] = useState('');
+  const [commentSaving, setCommentSaving] = useState(false);
+
   // Track actual pointer position via pointermove during drag (more accurate than delta calculation)
   useEffect(() => {
     if (!activeThreadUrl) return;
@@ -972,8 +884,9 @@ function ListApp() {
 
     // Dropped on a folder in sidebar
     if (overId.startsWith('folder-drop:')) {
-      const folderName = overId.replace('folder-drop:', '');
-      await handleMoveThread(threadUrl, folderName);
+      const folderId = overId.replace('folder-drop:', '');
+      // Pass the folder ID directly - Swift will look it up recursively
+      await handleMoveThread(threadUrl, folderId);
       return;
     }
 
@@ -998,9 +911,6 @@ function ListApp() {
 
   // Disable thread dragging when filtering/searching
   const isDragDisabled = Boolean(searchTerm.trim());
-
-  // Memoize flattened folders for dropdown to avoid recalculating on every render
-  const flattenedFolders = useMemo(() => flattenFoldersForDropdown(folders), [folders]);
 
   // Filter by folder first
   const filteredByFolder = useMemo(() => {
@@ -1145,6 +1055,27 @@ function ListApp() {
     }
   };
 
+  const handleAddComment = useCallback(async (url: string) => {
+    const trimmed = commentDraft.trim();
+    if (!trimmed) return;
+
+    setCommentSaving(true);
+    try {
+      const updatedThread = await appendComment(url, trimmed);
+      replaceThread(updatedThread);
+      setCommentDialogUrl(null);
+      setCommentDraft('');
+      chrome.runtime
+        .sendMessage({ type: 'comment-saved', url })
+        .catch((err) => console.error('Failed to notify background about thread update', err));
+    } catch (err) {
+      console.error('Failed to add comment', err);
+      setErrorForThread(url, 'Failed to add comment.');
+    } finally {
+      setCommentSaving(false);
+    }
+  }, [commentDraft, replaceThread]);
+
   const handleFaviconError = (url: string) => {
     setFaviconFailures((prev) => {
       if (prev[url]) {
@@ -1262,7 +1193,7 @@ function ListApp() {
 
             {/* Scrollable content */}
             <div className="flex-1 min-h-0 overflow-auto">
-              <div className="mx-auto w-full max-w-4xl px-4 py-6">
+              <div className="w-full px-6 py-6">
                 {loading ? <p className="text-sm text-muted-foreground">Loading comments...</p> : null}
 
                 {/* Domain filters - visible if any domain has multiple threads globally */}
@@ -1345,12 +1276,12 @@ function ListApp() {
                               <img
                                 src={thread.faviconUrl ?? undefined}
                                 alt=""
-                                className="h-12 w-12 shrink-0"
+                                className="size-6 shrink-0"
                                 onError={() => handleFaviconError(thread.url)}
                                 referrerPolicy="no-referrer"
                               />
                             ) : (
-                              <LinkIcon className="h-12 w-12 shrink-0 text-muted-foreground" />
+                              <LinkIcon className="size-6 shrink-0 text-muted-foreground" />
                             )}
                           </a>
                           <div className="flex min-w-0 flex-1 flex-col gap-3 overflow-hidden">
@@ -1381,48 +1312,25 @@ function ListApp() {
                                   {displayTitle}
                                 </div>
                               </div>
-                              {/* Move to folder dropdown */}
-                              {folders.length > 1 && (
-                                <DropdownMenu>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <DropdownMenuTrigger asChild>
-                                        <Button
-                                          variant="ghost"
-                                          size="icon"
-                                          className="h-8 w-8 shrink-0 text-muted-foreground"
-                                          aria-label="Move to folder"
-                                        >
-                                          <FolderMoveIcon className="size-4" />
-                                        </Button>
-                                      </DropdownMenuTrigger>
-                                    </TooltipTrigger>
-                                    <TooltipContent>
-                                      <p>Move to folder</p>
-                                    </TooltipContent>
-                                  </Tooltip>
-                                  <DropdownMenuContent align="end" className="max-w-[200px]">
-                                    {flattenedFolders.map(({ folder, depth }) => (
-                                      <DropdownMenuItem
-                                        key={folder.id}
-                                        onClick={() => handleMoveThread(thread.url, folder.name)}
-                                        disabled={thread.folder === folder.name}
-                                        className="overflow-hidden"
-                                      >
-                                        {depth > 0 && (
-                                          <span className="text-muted-foreground/50 shrink-0" style={{ marginLeft: (depth - 1) * 10 }}>
-                                            └
-                                          </span>
-                                        )}
-                                        <span className="min-w-0 flex-1 truncate">
-                                          {folder.name}
-                                          {thread.folder === folder.name && ' (current)'}
-                                        </span>
-                                      </DropdownMenuItem>
-                                    ))}
-                                  </DropdownMenuContent>
-                                </DropdownMenu>
-                              )}
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8 shrink-0 text-muted-foreground"
+                                    aria-label="Add comment"
+                                    onClick={() => {
+                                      setCommentDialogUrl(thread.url);
+                                      setCommentDraft('');
+                                    }}
+                                  >
+                                    <MessageSquarePlus className="size-4" />
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  <p>Add comment</p>
+                                </TooltipContent>
+                              </Tooltip>
                               <Tooltip>
                                 <TooltipTrigger asChild>
                                   <Button
@@ -1485,6 +1393,41 @@ function ListApp() {
             </div>
           </div>
         </div>
+
+        {/* Add comment dialog */}
+        <Dialog open={!!commentDialogUrl} onOpenChange={(open) => {
+          if (!open) {
+            setCommentDialogUrl(null);
+            setCommentDraft('');
+          }
+        }}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Add comment</DialogTitle>
+            </DialogHeader>
+            <Textarea
+              placeholder="Write your comment..."
+              value={commentDraft}
+              onChange={(e) => setCommentDraft(e.target.value)}
+              className="min-h-[100px] resize-none"
+              autoFocus
+            />
+            <DialogFooter>
+              <Button
+                variant="ghost"
+                onClick={() => setCommentDialogUrl(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                disabled={!commentDraft.trim() || commentSaving}
+                onClick={() => handleAddComment(commentDialogUrl!)}
+              >
+                {commentSaving ? 'Saving...' : 'Add'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </TooltipProvider>
       <DragOverlay dropAnimation={null}>
         {activeThread && <ThreadDragPreview thread={activeThread} />}
@@ -1562,7 +1505,15 @@ function App() {
   if (appState === 'setup') {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
-        <SetupView onComplete={() => setAppState('ready')} />
+        <SetupView onComplete={() => setAppState('import-prompt')} />
+      </div>
+    );
+  }
+
+  if (appState === 'import-prompt') {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <ImportBookmarksView onComplete={() => setAppState('ready')} />
       </div>
     );
   }

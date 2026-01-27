@@ -181,16 +181,16 @@ type FolderSidebarProps = {
   logoSlot?: React.ReactNode;
 };
 
-// Folder drop target for threads (separate from folder-to-folder drops)
-function FolderThreadDropTarget({ folderName, isActive }: { folderName: string; isActive: boolean }) {
+// Overlay drop target for threads
+function FolderThreadDropTarget({ folderId, isActive }: { folderId: string; isActive: boolean }) {
   const { setNodeRef, isOver } = useDroppable({
-    id: `folder-drop:${folderName}`,
+    id: `folder-drop:${folderId}`,
   });
 
   return (
     <div
       ref={setNodeRef}
-      className={`absolute inset-0 pointer-events-auto z-10 rounded-[3px] ${
+      className={`absolute inset-0 z-10 rounded-[3px] pointer-events-auto ${
         isOver || isActive ? 'ring-2 ring-primary ring-inset' : ''
       }`}
     />
@@ -741,14 +741,12 @@ export function FolderSidebar({
           </button>
 
           {/* Uncategorized - Secondary */}
-          {uncategorizedFolder && (
-            <div className="relative">
-              {activeThreadDrag && (
-                <FolderThreadDropTarget
-                  folderName="Uncategorized"
-                  isActive={threadDropTargetId === 'folder-drop:Uncategorized'}
-                />
-              )}
+          {uncategorizedFolder && activeThreadDrag ? (
+            <div className="relative w-full">
+              <FolderThreadDropTarget
+                folderId="uncategorized"
+                isActive={threadDropTargetId === 'folder-drop:uncategorized'}
+              />
               <button
                 type="button"
                 style={{ paddingLeft: 12 }}
@@ -778,46 +776,134 @@ export function FolderSidebar({
                 </div>
               </button>
             </div>
-          )}
+          ) : uncategorizedFolder ? (
+            <button
+              type="button"
+              style={{ paddingLeft: 12 }}
+              className={`group relative flex w-full items-center gap-2 rounded-[3px] pr-3 py-2 text-sm cursor-pointer overflow-hidden ${
+                selectedFolder === 'Uncategorized'
+                  ? 'bg-primary/15 text-foreground'
+                  : 'text-foreground/80 hover:bg-accent/40 hover:text-foreground'
+              }`}
+              onClick={() => onSelectFolder('Uncategorized')}
+            >
+              <InboxIcon
+                className={`h-4 w-4 ${
+                  selectedFolder === 'Uncategorized'
+                    ? 'text-foreground'
+                    : 'text-muted-foreground group-hover:text-foreground/70'
+                }`}
+              />
+              <span className="flex-1 min-w-0 truncate text-left">Unsorted</span>
+              <div className="w-8 shrink-0 flex items-center justify-end">
+                <span
+                  className={`text-xs tabular-nums ${
+                    selectedFolder === 'Uncategorized' ? 'text-foreground/70' : 'text-muted-foreground'
+                  }`}
+                >
+                  {uncategorizedFolder.threadCount}
+                </span>
+              </div>
+            </button>
+          ) : null}
 
           {/* Divider */}
           {userFolders.length > 0 && <div className="my-2 mx-3 border-t border-border/40" />}
 
           {/* User Folders with Drag and Drop */}
-          <DndContext
-            sensors={sensors}
-            onDragStart={handleDragStart}
-            onDragMove={handleDragMove}
-            onDragEnd={handleDragEnd}
-            onDragCancel={handleDragCancel}
-          >
-            {flattenedFolders.map(({ folder, depth }) => (
-              <div key={folder.id} data-folder-id={folder.id} className="relative w-full overflow-hidden">
-                {activeThreadDrag && (
-                  <FolderThreadDropTarget
-                    folderName={folder.name}
-                    isActive={threadDropTargetId === `folder-drop:${folder.name}`}
-                  />
-                )}
-                <DraggableFolderItem
-                  folder={folder}
-                  depth={depth}
-                  isSelected={selectedFolder === folder.name}
-                  isExpanded={expandedFolders.has(folder.id)}
-                  hasChildren={folder.children.length > 0}
-                  dropPosition={overId === folder.id ? dropPosition : null}
-                  isDragging={activeId === folder.id}
-                  onSelect={() => onSelectFolder(folder.name)}
-                  onToggleExpand={() => onToggleExpanded(folder.id)}
-                  onRename={() => openRenameDialog(folder.name)}
-                  onDelete={() => onDeleteFolder(folder.name)}
+          {/*
+            CRITICAL: When dragging a THREAD, we must NOT wrap folders in the inner DndContext.
+            Otherwise FolderThreadDropTarget registers with the inner context instead of
+            the outer context (App.tsx), and thread-to-folder drops won't work.
+          */}
+          {activeThreadDrag ? (
+            // Thread drag mode: NO inner DndContext - drop targets register with outer context
+            flattenedFolders.map(({ folder, depth }) => (
+              <div key={folder.id} className="relative w-full">
+                <FolderThreadDropTarget
+                  folderId={folder.id}
+                  isActive={threadDropTargetId === `folder-drop:${folder.id}`}
                 />
+                <button
+                  type="button"
+                  style={{ paddingLeft: 12 + (depth > 0 ? depth * 10 : 0) }}
+                  className={`group relative flex w-full items-center gap-2 rounded-[3px] pr-3 py-2 text-sm cursor-pointer overflow-hidden ${
+                    selectedFolder === folder.name
+                      ? 'bg-primary/15 text-foreground'
+                      : 'text-foreground/80 hover:bg-accent/40 hover:text-foreground'
+                  }`}
+                  onClick={() => onSelectFolder(folder.name)}
+                >
+                  {folder.children.length > 0 && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      className="absolute -left-1 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-accent/60"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onToggleExpanded(folder.id);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.stopPropagation();
+                          onToggleExpanded(folder.id);
+                        }
+                      }}
+                    >
+                      <ChevronRightIcon
+                        className={`h-3 w-3 ${expandedFolders.has(folder.id) ? 'rotate-90' : ''}`}
+                      />
+                    </span>
+                  )}
+                  {selectedFolder === folder.name ? (
+                    <FolderOpenIcon className="h-4 w-4 text-foreground shrink-0" />
+                  ) : (
+                    <FolderIcon className="h-4 w-4 text-muted-foreground group-hover:text-foreground/70 shrink-0" />
+                  )}
+                  <span className="flex-1 min-w-0 truncate text-left">{folder.name}</span>
+                  <div className="w-8 shrink-0 flex items-center justify-end">
+                    <span
+                      className={`text-xs tabular-nums ${
+                        selectedFolder === folder.name ? 'text-foreground/70' : 'text-muted-foreground'
+                      }`}
+                    >
+                      {folder.threadCount}
+                    </span>
+                  </div>
+                </button>
               </div>
-            ))}
-            <DragOverlay dropAnimation={null}>
-              {activeFolder && <FolderDragPreview folder={activeFolder} />}
-            </DragOverlay>
-          </DndContext>
+            ))
+          ) : (
+            // Normal mode: inner DndContext for folder reordering
+            <DndContext
+              sensors={sensors}
+              onDragStart={handleDragStart}
+              onDragMove={handleDragMove}
+              onDragEnd={handleDragEnd}
+              onDragCancel={handleDragCancel}
+            >
+              {flattenedFolders.map(({ folder, depth }) => (
+                <div key={folder.id} data-folder-id={folder.id} className="relative w-full overflow-hidden">
+                  <DraggableFolderItem
+                    folder={folder}
+                    depth={depth}
+                    isSelected={selectedFolder === folder.name}
+                    isExpanded={expandedFolders.has(folder.id)}
+                    hasChildren={folder.children.length > 0}
+                    dropPosition={overId === folder.id ? dropPosition : null}
+                    isDragging={activeId === folder.id}
+                    onSelect={() => onSelectFolder(folder.name)}
+                    onToggleExpand={() => onToggleExpanded(folder.id)}
+                    onRename={() => openRenameDialog(folder.name)}
+                    onDelete={() => onDeleteFolder(folder.name)}
+                  />
+                </div>
+              ))}
+              <DragOverlay dropAnimation={null}>
+                {activeFolder && <FolderDragPreview folder={activeFolder} />}
+              </DragOverlay>
+            </DndContext>
+          )}
         </div>
       </ScrollArea>
 
