@@ -1,4 +1,16 @@
-import { useCallback, useEffect, useMemo, useState, type SVGProps } from 'react';
+import { useCallback, useEffect, useMemo, useState, useRef, type SVGProps } from 'react';
+import {
+  DndContext,
+  DragOverlay,
+  useSensor,
+  useSensors,
+  PointerSensor,
+  useDraggable,
+  useDroppable,
+  type DragStartEvent,
+  type DragEndEvent,
+  type DragMoveEvent,
+} from '@dnd-kit/core';
 import { useColorScheme } from '../../src/shared/hooks/useColorScheme';
 import { Button } from '../../src/components/ui/button';
 import { Card, CardContent } from '../../src/components/ui/card';
@@ -17,8 +29,10 @@ import {
   moveThread,
   nestFolder as nestFolderApi,
   reorderFolder as reorderFolderApi,
+  importBookmarks,
   type ClipThread,
   type Folder,
+  type ImportBookmark,
 } from '../../src/shared/storage';
 import { SetupView } from '../../src/shared/components/SetupView';
 import { FolderSidebar } from '../../src/shared/components/FolderSidebar';
@@ -31,7 +45,7 @@ import {
 import { DownloadHelperView } from '../../src/shared/components/DownloadHelperView';
 import { formatAbsolute, formatRelativeOrAbsolute } from '../../src/shared/datetime';
 import { formatDisplayUrl, stripWwwPrefix, getBaseDomainInfo } from '../../src/shared/url';
-import { Loader2, RefreshCw, Settings, CheckCircle2, AlertCircle, Globe, AlertTriangle, Github } from 'lucide-react';
+import { Loader2, RefreshCw, Settings, CheckCircle2, AlertCircle, Globe, AlertTriangle, Github, GripVertical } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -66,7 +80,7 @@ function flattenFoldersForDropdown(folders: Folder[]): { folder: Folder; depth: 
   return result;
 }
 
-const PREVIEW_FRAME_ASPECT = 1.91;
+const PREVIEW_FRAME_ASPECT = 1.2;
 const PREVIEW_SIMILARITY_TOLERANCE = 0.25;
 
 function determinePreviewFit(width: number, height: number): PreviewFit {
@@ -157,6 +171,77 @@ function XIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+// Drag preview for threads
+function ThreadDragPreview({ thread }: { thread: ClipThread }) {
+  const displayTitle = thread.title?.trim() || formatDisplayUrl(thread.url);
+  return (
+    <div className="flex items-center gap-2 rounded-lg bg-background border border-border px-3 py-2 text-sm shadow-lg max-w-[280px]">
+      {thread.faviconUrl ? (
+        <img src={thread.faviconUrl} alt="" className="size-4 shrink-0" referrerPolicy="no-referrer" />
+      ) : (
+        <LinkIcon className="size-4 shrink-0 text-muted-foreground" />
+      )}
+      <span className="truncate">{displayTitle}</span>
+    </div>
+  );
+}
+
+type DropPosition = 'before' | 'after' | null;
+
+// Draggable thread wrapper - also acts as drop target for reordering
+type DraggableThreadCardProps = {
+  thread: ClipThread;
+  children: React.ReactNode;
+  isDragDisabled?: boolean;
+  dropPosition: DropPosition;
+};
+
+function DraggableThreadCard({ thread, children, isDragDisabled, dropPosition }: DraggableThreadCardProps) {
+  const { attributes, listeners, setNodeRef: setDragRef, isDragging } = useDraggable({
+    id: `thread:${thread.url}`,
+    data: { type: 'thread', thread },
+    disabled: isDragDisabled,
+  });
+
+  const { setNodeRef: setDropRef } = useDroppable({
+    id: `thread-drop:${thread.url}`,
+  });
+
+  // Combine refs
+  const setNodeRef = (node: HTMLElement | null) => {
+    setDragRef(node);
+    setDropRef(node);
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      data-thread-url={thread.url}
+      className={`group/drag relative ${isDragging ? 'opacity-30' : ''}`}
+    >
+      {/* Drop indicator: before */}
+      {dropPosition === 'before' && (
+        <div className="absolute left-0 right-0 -top-px h-[3px] bg-blue-500 z-20 rounded-full" />
+      )}
+
+      {/* Drop indicator: after */}
+      {dropPosition === 'after' && (
+        <div className="absolute left-0 right-0 -bottom-px h-[3px] bg-blue-500 z-20 rounded-full" />
+      )}
+
+      {/* Drag handle - visible on hover */}
+      <div
+        {...attributes}
+        {...listeners}
+        className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-full pr-1 opacity-0 group-hover/drag:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
+      >
+        <GripVertical className="size-4 text-muted-foreground/50 hover:text-muted-foreground" />
+      </div>
+      {children}
+    </div>
+  );
+}
+
 function getThreadDisplayTitle(thread: ClipThread): string {
   const stored = thread.title?.trim();
   if (stored) {
@@ -228,10 +313,98 @@ function useThreads() {
     [setThreads],
   );
 
-  return { threads, loading, refreshing, refresh, replaceThread, removeThread };
+  const reorderThread = useCallback(
+    (sourceUrl: string, targetUrl: string, position: 'before' | 'after') => {
+      setThreads((prev) => {
+        const sourceIndex = prev.findIndex((t) => t.url === sourceUrl);
+        const targetIndex = prev.findIndex((t) => t.url === targetUrl);
+        if (sourceIndex === -1 || targetIndex === -1 || sourceIndex === targetIndex) {
+          return prev;
+        }
+
+        const next = prev.slice();
+        const [removed] = next.splice(sourceIndex, 1);
+
+        // Recalculate target index after removal
+        let insertIndex = targetIndex;
+        if (sourceIndex < targetIndex) {
+          insertIndex -= 1;
+        }
+        if (position === 'after') {
+          insertIndex += 1;
+        }
+
+        next.splice(insertIndex, 0, removed);
+        return next;
+      });
+    },
+    [setThreads],
+  );
+
+  return { threads, loading, refreshing, refresh, replaceThread, removeThread, reorderThread };
 }
 
 type SettingsStatus = 'idle' | 'loading' | 'saving' | 'success' | 'error';
+type ImportStatus = 'idle' | 'confirming' | 'importing' | 'done' | 'error';
+
+type ChromeBookmarkNode = {
+  id: string;
+  title: string;
+  url?: string;
+  children?: ChromeBookmarkNode[];
+};
+
+function flattenChromeBookmarks(nodes: ChromeBookmarkNode[]): ImportBookmark[] {
+  const results: ImportBookmark[] = [];
+  const topLevelContainers = new Set(['Bookmarks Bar', 'Other Bookmarks', 'Mobile Bookmarks', 'Other bookmarks', 'Mobile bookmarks']);
+
+  function traverse(children: ChromeBookmarkNode[], folderPath: string[], depth: number) {
+    for (const node of children) {
+      if (node.url) {
+        // It's a bookmark - filter non-http(s) URLs
+        if (!node.url.startsWith('http://') && !node.url.startsWith('https://')) {
+          continue;
+        }
+
+        let folder = 'Uncategorized';
+        if (folderPath.length > 0) {
+          // Max 3 levels of folder path
+          folder = folderPath.slice(0, 3).join('/');
+        }
+
+        let faviconUrl: string | undefined;
+        try {
+          const domain = new URL(node.url).hostname;
+          faviconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
+        } catch {
+          // skip favicon
+        }
+
+        results.push({
+          url: node.url,
+          title: node.title || undefined,
+          faviconUrl,
+          folder,
+        });
+      } else if (node.children) {
+        // It's a folder
+        if (depth === 0 && topLevelContainers.has(node.title)) {
+          // Skip top-level containers as folder names, just traverse children
+          traverse(node.children, folderPath, depth + 1);
+        } else {
+          // Flatten at max 3 levels
+          const newPath = folderPath.length < 3
+            ? [...folderPath, node.title]
+            : folderPath;
+          traverse(node.children, newPath, depth + 1);
+        }
+      }
+    }
+  }
+
+  traverse(nodes, [], 0);
+  return results;
+}
 
 function SettingsDialog() {
   const [open, setOpen] = useState(false);
@@ -240,6 +413,12 @@ function SettingsDialog() {
   const [error, setError] = useState<string | null>(null);
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
+
+  // Import state
+  const [importStatus, setImportStatus] = useState<ImportStatus>('idle');
+  const [importBookmarksList, setImportBookmarksList] = useState<ImportBookmark[]>([]);
+  const [importResult, setImportResult] = useState<{ imported: number; skipped: number } | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
 
   const loadConfig = async () => {
     setStatus('loading');
@@ -283,6 +462,10 @@ function SettingsDialog() {
       // Reset state when closing
       setStatus('idle');
       setError(null);
+      setImportStatus('idle');
+      setImportBookmarksList([]);
+      setImportResult(null);
+      setImportError(null);
     }
   };
 
@@ -336,6 +519,46 @@ function SettingsDialog() {
     if (e.key === 'Enter' && status !== 'saving' && status !== 'loading') {
       void handleSave();
     }
+  };
+
+  const handleImportClick = async () => {
+    setImportError(null);
+    setImportResult(null);
+    try {
+      const tree = await chrome.bookmarks.getTree();
+      const root = tree[0]?.children ?? [];
+      const mapped = flattenChromeBookmarks(root);
+      if (mapped.length === 0) {
+        setImportError('No importable bookmarks found (only http/https URLs are imported).');
+        return;
+      }
+      setImportBookmarksList(mapped);
+      setImportStatus('confirming');
+    } catch (err) {
+      console.error('Failed to read Chrome bookmarks', err);
+      setImportError('Failed to read Chrome bookmarks. Make sure the extension has the bookmarks permission.');
+    }
+  };
+
+  const handleImportConfirm = async () => {
+    setImportStatus('importing');
+    setImportError(null);
+    try {
+      const result = await importBookmarks(importBookmarksList);
+      setImportResult(result);
+      setImportStatus('done');
+    } catch (err) {
+      console.error('Import failed', err);
+      setImportError(err instanceof Error ? err.message : 'Import failed');
+      setImportStatus('error');
+    }
+  };
+
+  const handleImportCancel = () => {
+    setImportStatus('idle');
+    setImportBookmarksList([]);
+    setImportError(null);
+    setImportResult(null);
   };
 
   return (
@@ -423,6 +646,87 @@ function SettingsDialog() {
                 )}
               </Button>
 
+              {/* Import Chrome Bookmarks */}
+              <div className="border-t border-border pt-4 mt-2 space-y-2">
+                <Label>Import</Label>
+                {importStatus === 'idle' && (
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    onClick={handleImportClick}
+                  >
+                    Import Chrome Bookmarks
+                  </Button>
+                )}
+
+                {importStatus === 'confirming' && (
+                  <div className="space-y-2">
+                    <p className="text-sm text-muted-foreground">
+                      Import {importBookmarksList.length} bookmark{importBookmarksList.length !== 1 ? 's' : ''} from Chrome?
+                    </p>
+                    <div className="flex gap-2">
+                      <Button
+                        className="flex-1"
+                        onClick={handleImportConfirm}
+                      >
+                        Import
+                      </Button>
+                      <Button
+                        variant="outline"
+                        className="flex-1"
+                        onClick={handleImportCancel}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {importStatus === 'importing' && (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>Importing bookmarks...</span>
+                  </div>
+                )}
+
+                {importStatus === 'done' && importResult && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 rounded-md bg-green-500/10 p-3 text-sm text-green-600">
+                      <CheckCircle2 className="h-4 w-4" />
+                      <span>
+                        Imported {importResult.imported} bookmark{importResult.imported !== 1 ? 's' : ''}
+                        {importResult.skipped > 0 && `, skipped ${importResult.skipped} duplicate${importResult.skipped !== 1 ? 's' : ''}`}
+                      </span>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full"
+                      onClick={handleImportCancel}
+                    >
+                      Done
+                    </Button>
+                  </div>
+                )}
+
+                {(importStatus === 'error' || importError) && (
+                  <div className="space-y-2">
+                    <div className="flex items-start gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+                      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                      <span>{importError}</span>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full"
+                      onClick={handleImportCancel}
+                    >
+                      Dismiss
+                    </Button>
+                  </div>
+                )}
+              </div>
+
               <div className="flex items-center justify-center gap-2 pt-2">
                 <a
                   href="https://github.com/alexanderjmontague/jot"
@@ -452,7 +756,7 @@ function SettingsDialog() {
 }
 
 function ListApp() {
-  const { threads, loading, refreshing, refresh, replaceThread, removeThread } = useThreads();
+  const { threads, loading, refreshing, refresh, replaceThread, removeThread, reorderThread } = useThreads();
   const [searchTerm, setSearchTerm] = useState('');
   const [activeFilterId, setActiveFilterId] = useState('all');
   const [errors, setErrors] = useState<ThreadErrors>({});
@@ -460,10 +764,35 @@ function ListApp() {
   const [previewFailures, setPreviewFailures] = useState<PreviewFailures>({});
   const [previewFits, setPreviewFits] = useState<PreviewFits>({});
 
+  // Drag and drop state
+  const [activeThreadUrl, setActiveThreadUrl] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [threadDropPosition, setThreadDropPosition] = useState<DropPosition>(null);
+  const mouseYRef = useRef<number>(0);
+
+  // Track actual pointer position via pointermove during drag (more accurate than delta calculation)
+  useEffect(() => {
+    if (!activeThreadUrl) return;
+
+    const handlePointerMove = (e: PointerEvent) => {
+      mouseYRef.current = e.clientY;
+    };
+
+    document.addEventListener('pointermove', handlePointerMove);
+    return () => document.removeEventListener('pointermove', handlePointerMove);
+  }, [activeThreadUrl]);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8,
+      },
+    })
+  );
+
   // Folder state
   const [folders, setFolders] = useState<Folder[]>([]);
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null); // null = "All"
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => {
     // Load from localStorage
     try {
@@ -577,6 +906,98 @@ function ListApp() {
       console.error('Failed to reorder folder', err);
     }
   }, []);
+
+  // Thread drag handlers
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    const { active } = event;
+    const activeId = active.id as string;
+    if (activeId.startsWith('thread:')) {
+      setActiveThreadUrl(activeId.replace('thread:', ''));
+    }
+  }, []);
+
+  const handleDragMove = useCallback((event: DragMoveEvent) => {
+    const { over } = event;
+    // Mouse position is tracked via pointermove listener (more accurate for tall elements)
+
+    if (!over) {
+      setDropTargetId(null);
+      setThreadDropPosition(null);
+      return;
+    }
+
+    const overId = over.id as string;
+    setDropTargetId(overId);
+
+    // Calculate drop position for thread reordering
+    if (overId.startsWith('thread-drop:')) {
+      const threadUrl = overId.replace('thread-drop:', '');
+      const overElement = document.querySelector(`[data-thread-url="${CSS.escape(threadUrl)}"]`);
+      if (!overElement) {
+        setThreadDropPosition(null);
+        return;
+      }
+
+      const rect = overElement.getBoundingClientRect();
+      const mouseY = mouseYRef.current;
+      const relativeY = mouseY - rect.top;
+      const ratio = relativeY / rect.height;
+
+      // Don't show drop position on self
+      if (threadUrl === activeThreadUrl) {
+        setThreadDropPosition(null);
+        return;
+      }
+
+      // Top half = before, bottom half = after
+      setThreadDropPosition(ratio < 0.5 ? 'before' : 'after');
+    } else {
+      setThreadDropPosition(null);
+    }
+  }, [activeThreadUrl]);
+
+  const handleDragEnd = useCallback(async (event: DragEndEvent) => {
+    const { active, over } = event;
+    const activeId = active.id as string;
+    const finalDropPosition = threadDropPosition;
+
+    setActiveThreadUrl(null);
+    setDropTargetId(null);
+    setThreadDropPosition(null);
+
+    if (!over || !activeId.startsWith('thread:')) return;
+
+    const threadUrl = activeId.replace('thread:', '');
+    const overId = over.id as string;
+
+    // Dropped on a folder in sidebar
+    if (overId.startsWith('folder-drop:')) {
+      const folderName = overId.replace('folder-drop:', '');
+      await handleMoveThread(threadUrl, folderName);
+      return;
+    }
+
+    // Dropped on another thread for reordering
+    if (overId.startsWith('thread-drop:') && finalDropPosition) {
+      const targetThreadUrl = overId.replace('thread-drop:', '');
+      reorderThread(threadUrl, targetThreadUrl, finalDropPosition);
+    }
+  }, [handleMoveThread, threadDropPosition, reorderThread]);
+
+  const handleDragCancel = useCallback(() => {
+    setActiveThreadUrl(null);
+    setDropTargetId(null);
+    setThreadDropPosition(null);
+  }, []);
+
+  // Get the active thread for drag preview
+  const activeThread = useMemo(() => {
+    if (!activeThreadUrl) return null;
+    return threads.find((t) => t.url === activeThreadUrl) ?? null;
+  }, [activeThreadUrl, threads]);
+
+  // Disable thread dragging when filtering/searching
+  const isDragDisabled = Boolean(searchTerm.trim());
 
   // Memoize flattened folders for dropdown to avoid recalculating on every render
   const flattenedFolders = useMemo(() => flattenFoldersForDropdown(folders), [folders]);
@@ -754,108 +1175,114 @@ function ListApp() {
           description: 'Try adjusting your search.',
         };
 
+  // Logo element to pass to sidebar
+  const logoElement = (
+    <button
+      type="button"
+      onClick={() => setSelectedFolder(null)}
+      className="flex items-center shrink-0 rounded-md hover:bg-accent/50 transition-colors"
+    >
+      <img
+        src="/logo.svg"
+        alt="Jot"
+        className="select-none"
+        style={{ width: 28, height: 28 }}
+        draggable={false}
+      />
+    </button>
+  );
+
   return (
-    <TooltipProvider delayDuration={0}>
-      <div className="flex h-screen flex-col overflow-hidden bg-muted/20">
-        {/* Fixed top navbar */}
-        <nav className="shrink-0 flex w-full items-center gap-4 border-b border-border bg-background px-3 py-2">
-          <button
-            type="button"
-            onClick={() => setSelectedFolder(null)}
-            className="flex items-center gap-1.5 shrink-0 rounded-md px-1 -ml-1 hover:bg-accent/50 transition-colors"
-          >
-            <img
-              src="/jot_logo.svg"
-              alt="Jot"
-              className="select-none"
-              style={{ width: 24, height: 24 }}
-              draggable={false}
-            />
-            <h1 className="text-lg font-semibold text-foreground">Jot</h1>
-          </button>
-
-          {/* Search bar */}
-          <div className="flex flex-1 items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-1.5 text-muted-foreground focus-within:border-border focus-within:bg-muted/50 transition-colors">
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-muted-foreground/60">
-              <path d="m21 21-4.34-4.34"/>
-              <circle cx="11" cy="11" r="8"/>
-            </svg>
-            <Input
-              placeholder="Search..."
-              value={searchTerm}
-              onChange={(event) => setSearchTerm(event.target.value)}
-              className="h-auto w-full border-0 bg-transparent p-0 text-sm text-foreground placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
-            />
-          </div>
-
-          <div className="flex items-center gap-1 shrink-0">
-            <SettingsDialog />
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={refresh}
-                  disabled={refreshing}
-                  className="h-8 w-8"
-                  aria-label="Refresh comments"
-                >
-                  <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>Refresh</p>
-              </TooltipContent>
-            </Tooltip>
-          </div>
-        </nav>
-
-        {/* Main content with fixed sidebar */}
-        <div className="flex flex-1 min-h-0">
-          {/* Fixed sidebar */}
+    <DndContext
+      sensors={sensors}
+      onDragStart={handleDragStart}
+      onDragMove={handleDragMove}
+      onDragEnd={handleDragEnd}
+      onDragCancel={handleDragCancel}
+    >
+      <TooltipProvider delayDuration={0}>
+        <div className="flex h-screen overflow-hidden bg-muted/20">
+          {/* Full-height sidebar with logo */}
           <FolderSidebar
             folders={folders}
             selectedFolder={selectedFolder}
-            collapsed={sidebarCollapsed}
             totalThreadCount={threads.length}
             expandedFolders={expandedFolders}
             onSelectFolder={setSelectedFolder}
             onCreateFolder={handleCreateFolder}
             onRenameFolder={handleRenameFolder}
             onDeleteFolder={handleDeleteFolder}
-            onToggleCollapsed={() => setSidebarCollapsed(!sidebarCollapsed)}
             onToggleExpanded={handleToggleExpanded}
             onNestFolder={handleNestFolder}
             onReorderFolder={handleReorderFolder}
+            activeThreadDrag={Boolean(activeThreadUrl)}
+            threadDropTargetId={dropTargetId}
+            logoSlot={logoElement}
           />
 
-          {/* Main content area */}
+          {/* Right column: nav bar + main content */}
           <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
-            {/* Fixed filter navbar - visible if any domain has multiple threads globally */}
-            {showDomainFilter && (
-              <nav className="shrink-0 flex h-[49px] w-full items-center gap-2 overflow-x-auto border-b border-border/50 bg-background px-3">
-                {filters.map((option) => (
-                  <Button
-                    key={option.id}
-                    type="button"
-                    size="sm"
-                    variant={option.id === activeFilterId ? 'secondary' : 'ghost'}
-                    className={`rounded-full gap-1.5 ${option.id === activeFilterId ? '' : 'text-muted-foreground/60'}`}
-                    aria-pressed={option.id === activeFilterId}
-                    onClick={() => setActiveFilterId(option.id)}
-                  >
-                    <Globe className="size-3" />
-                    <span className="whitespace-nowrap">{option.label}</span>
-                    <span className="flex size-4 items-center justify-center rounded-full bg-muted-foreground/15 text-[10px] font-medium">{option.count}</span>
-                  </Button>
-                ))}
-              </nav>
-            )}
+            {/* Top navbar (no logo) */}
+            <nav className="shrink-0 flex w-full items-center gap-4 h-12 border-b border-border bg-background px-3">
+              {/* Search bar */}
+              <div className={`flex flex-1 items-center gap-2 px-1 py-1 text-muted-foreground transition-all border-b ${searchTerm ? 'border-border/60' : 'border-transparent'} hover:border-border/40 focus-within:border-border`}>
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-muted-foreground/40">
+                  <path d="m21 21-4.34-4.34"/>
+                  <circle cx="11" cy="11" r="8"/>
+                </svg>
+                <Input
+                  placeholder="Search..."
+                  value={searchTerm}
+                  onChange={(event) => setSearchTerm(event.target.value)}
+                  className="h-auto w-full rounded-none border-0 bg-transparent p-0 text-sm text-foreground placeholder:text-muted-foreground/40 focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0 ring-offset-transparent"
+                />
+              </div>
+
+              <div className="flex items-center gap-1 shrink-0">
+                <SettingsDialog />
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={refresh}
+                      disabled={refreshing}
+                      className="h-8 w-8"
+                      aria-label="Refresh comments"
+                    >
+                      <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Refresh</p>
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+            </nav>
 
             {/* Scrollable content */}
             <div className="flex-1 min-h-0 overflow-auto">
               <div className="mx-auto w-full max-w-4xl px-4 py-6">
                 {loading ? <p className="text-sm text-muted-foreground">Loading comments...</p> : null}
+
+                {/* Domain filters - visible if any domain has multiple threads globally */}
+                {showDomainFilter && (
+                  <div className="flex items-center gap-1.5 flex-wrap mt-2 mb-3">
+                    {filters.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs transition-colors ${option.id === activeFilterId ? 'bg-secondary text-secondary-foreground' : 'text-muted-foreground/60 hover:bg-accent hover:text-accent-foreground'}`}
+                        aria-pressed={option.id === activeFilterId}
+                        onClick={() => setActiveFilterId(option.id)}
+                      >
+                        <Globe className="size-2.5" />
+                        <span className="whitespace-nowrap">{option.label}</span>
+                        <span className="text-[9px] font-medium">{option.count}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
 
                 <div className="pb-6">
               {showEmptyState ? (
@@ -864,7 +1291,7 @@ function ListApp() {
                   <p className="text-sm">{emptyStateContent.description}</p>
                 </div>
               ) : (
-                <div className="flex flex-col gap-6">
+                <div className="flex flex-col divide-y divide-border/30">
                   {displayThreads.map((thread) => {
                     const error = errors[thread.url] ?? null;
                     const displayTitle = getThreadDisplayTitle(thread);
@@ -874,15 +1301,24 @@ function ListApp() {
                     const previewFrameClass = showPreview ? 'bg-muted/50' : 'bg-muted/80 dark:bg-muted/60';
                     const currentFit = previewFits[thread.url] ?? 'contain';
                     const previewObjectClass = currentFit === 'cover' ? 'object-cover' : 'object-contain';
+                    // Calculate drop position for this specific thread
+                    const isDropTarget = dropTargetId === `thread-drop:${thread.url}`;
+                    const thisDropPosition = isDropTarget ? threadDropPosition : null;
 
                     return (
-                      <Card key={thread.url} className="rounded-none border-0 bg-transparent shadow-none">
-                        <CardContent className="flex min-w-0 items-start gap-4 px-0 py-5">
+                      <DraggableThreadCard
+                        key={thread.url}
+                        thread={thread}
+                        isDragDisabled={isDragDisabled}
+                        dropPosition={thisDropPosition}
+                      >
+                        <Card className="rounded-none border-0 bg-transparent shadow-none">
+                          <CardContent className="flex min-w-0 items-start gap-4 px-0 py-6">
                           <a
                             href={thread.url}
                             target="_blank"
                             rel="noreferrer"
-                            className={`flex aspect-[1.91/1] h-[120px] shrink-0 items-center justify-center overflow-hidden rounded-2xl border-[1.5px] border-black/20 dark:border-white/15 ${previewFrameClass}`}
+                            className={`flex aspect-[6/5] h-[50px] shrink-0 items-center justify-center overflow-hidden rounded-md border border-black/15 dark:border-white/10 ${previewFrameClass}`}
                             aria-label="Open saved page"
                           >
                             {showPreview ? (
@@ -1004,39 +1440,42 @@ function ListApp() {
                                 </TooltipContent>
                               </Tooltip>
                             </div>
-                            <div className="space-y-2">
-                              {thread.comments.map((comment) => (
-                                <div
-                                  key={comment.id}
-                                  className="group rounded-lg bg-[hsl(var(--comment-surface))] px-2 pt-1 pb-2 text-sm leading-relaxed text-foreground dark:text-foreground"
-                                >
-                                  <div className="flex min-w-0 items-center justify-between gap-2 overflow-hidden text-xs text-muted-foreground">
-                                    <span className="min-w-0 truncate text-muted-foreground/50" title={formatAbsolute(comment.createdAt)}>
-                                      {formatRelativeOrAbsolute(comment.createdAt)}
-                                    </span>
-                                    <Button
-                                      variant="ghost"
-                                      size="icon"
-                                      className="h-6 w-6 shrink-0 text-muted-foreground opacity-0 transition-opacity duration-150 hover:text-destructive focus-visible:opacity-100 focus-visible:text-destructive focus-visible:pointer-events-auto group-hover:opacity-100 group-hover:pointer-events-auto pointer-events-none"
-                                      aria-label="Delete comment"
-                                      onClick={() => handleDeleteComment(thread.url, comment.id)}
-                                    >
-                                      <TrashIcon className="size-3.5" />
-                                    </Button>
+                            {thread.comments.length > 0 && (
+                              <div className="space-y-2">
+                                {thread.comments.map((comment) => (
+                                  <div
+                                    key={comment.id}
+                                    className="group rounded-lg bg-[hsl(var(--comment-surface))] px-2 pt-1 pb-2 text-sm leading-relaxed text-foreground dark:text-foreground"
+                                  >
+                                    <div className="flex min-w-0 items-center justify-between gap-2 overflow-hidden text-xs text-muted-foreground">
+                                      <span className="min-w-0 truncate text-muted-foreground/50" title={formatAbsolute(comment.createdAt)}>
+                                        {formatRelativeOrAbsolute(comment.createdAt)}
+                                      </span>
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-6 w-6 shrink-0 text-muted-foreground opacity-0 transition-opacity duration-150 hover:text-destructive focus-visible:opacity-100 focus-visible:text-destructive focus-visible:pointer-events-auto group-hover:opacity-100 group-hover:pointer-events-auto pointer-events-none"
+                                        aria-label="Delete comment"
+                                        onClick={() => handleDeleteComment(thread.url, comment.id)}
+                                      >
+                                        <TrashIcon className="size-3.5" />
+                                      </Button>
+                                    </div>
+                                    <div className="break-words whitespace-pre-wrap pt-0 text-sm leading-relaxed">{comment.body}</div>
                                   </div>
-                                  <div className="break-words whitespace-pre-wrap pt-0 text-sm leading-relaxed">{comment.body}</div>
-                                </div>
-                              ))}
-                            </div>
+                                ))}
+                              </div>
+                            )}
 
                             {error ? (
                               <div className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-sm text-destructive">
                                 {error}
                               </div>
                             ) : null}
-                          </div>
-                        </CardContent>
-                      </Card>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      </DraggableThreadCard>
                     );
                   })}
                 </div>
@@ -1046,8 +1485,11 @@ function ListApp() {
             </div>
           </div>
         </div>
-      </div>
-    </TooltipProvider>
+      </TooltipProvider>
+      <DragOverlay dropAnimation={null}>
+        {activeThread && <ThreadDragPreview thread={activeThread} />}
+      </DragOverlay>
+    </DndContext>
   );
 }
 

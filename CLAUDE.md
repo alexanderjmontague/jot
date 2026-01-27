@@ -8,9 +8,7 @@ pnpm build
 
 Builds to `.output/chrome-mv3/` for loading as an unpacked extension in Chrome.
 
-After building, remind the user to reload the extension at `chrome://extensions`.
-
-**Note:** If the user reports that changes aren't appearing, they may have forgotten to run `pnpm build`. The extension won't reflect code changes until rebuilt.
+**Always rebuild automatically** after making code changes that would require it to see the result. Then remind the user to reload the extension at `chrome://extensions`.
 
 ## Releasing to GitHub
 

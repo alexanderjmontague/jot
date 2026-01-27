@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="public/jot_logo.svg" width="80" height="80" alt="Jot">
+  <img src="public/logo.svg" width="80" height="80" alt="Jot">
 </p>
 
 <h1 align="center">Jot</h1>

@@ -342,8 +342,12 @@ async function fetchPreviewImageFromTab(tabId: number): Promise<string | null> {
           if (!value) return 0;
           const normalized = value.toLowerCase();
           let score = 0;
-          if (/(profile|avatar|photo|headshot|face|cover|hero)/.test(normalized)) score += 50;
-          if (/(product|listing|primary|main|detail)/.test(normalized)) score += 40;
+          if (/(profile|avatar|photo|headshot|face|cover|hero)/.test(normalized)) score += 80;
+          if (/(product|listing|primary|main|detail|gallery|media)/.test(normalized)) score += 120;
+          // Penalty for likely logo/icon images - be conservative to avoid false positives
+          // Only penalize explicit logo references, not generic terms like "icon" or "brand"
+          if (/(site-logo|brand-logo|company-logo|header-logo|footer-logo|\blogo\b)/.test(normalized)) score -= 350;
+          if (/(sprite|spacer|placeholder)/.test(normalized)) score -= 300;
           return score;
         };
 
@@ -442,17 +446,31 @@ async function fetchPreviewImageFromTab(tabId: number): Promise<string | null> {
             document.querySelectorAll<HTMLScriptElement>('script[type="application/ld+json" i]'),
           ).slice(0, 20);
 
-          const collect = (value: unknown, depth: number) => {
+          // Score based on the schema type - Product/Article images are more valuable than Organization logos
+          // Organization/WebSite images are often logos, but not always (e.g., About pages)
+          // so we reduce their score but don't drop it too low
+          const scoreForType = (schemaType: string | undefined): number => {
+            if (!schemaType) return 500;
+            const t = schemaType.toLowerCase();
+            if (/(product|offer|itempage)/.test(t)) return 1000;
+            if (/(article|newsarticle|blogposting|review)/.test(t)) return 900;
+            if (/(person|profilepage)/.test(t)) return 850;
+            if (/(organization|website|localbusiness)/.test(t)) return 300; // Often logos, but could be hero on About pages
+            if (/(webpage|brand)/.test(t)) return 400;
+            return 500;
+          };
+
+          const collect = (value: unknown, depth: number, contextScore: number) => {
             if (depth > 6 || !value) return;
             if (Array.isArray(value)) {
               for (const entry of value) {
-                collect(entry, depth + 1);
+                collect(entry, depth + 1, contextScore);
               }
               return;
             }
 
             if (typeof value === 'string') {
-              boostCandidate(value, 900);
+              boostCandidate(value, contextScore);
               return;
             }
 
@@ -460,20 +478,25 @@ async function fetchPreviewImageFromTab(tabId: number): Promise<string | null> {
               return;
             }
 
-            const maybeImage = (value as Record<string, unknown>).image;
+            const obj = value as Record<string, unknown>;
+            const schemaType = (obj['@type'] as string) || undefined;
+            const typeScore = scoreForType(schemaType);
+            const effectiveScore = Math.max(contextScore, typeScore);
+
+            const maybeImage = obj.image;
             if (maybeImage !== undefined) {
-              collect(maybeImage, depth + 1);
+              collect(maybeImage, depth + 1, effectiveScore);
             }
 
-            const maybeThumbnail = (value as Record<string, unknown>).thumbnailUrl;
+            const maybeThumbnail = obj.thumbnailUrl;
             if (maybeThumbnail !== undefined) {
-              collect(maybeThumbnail, depth + 1);
+              collect(maybeThumbnail, depth + 1, effectiveScore);
             }
 
-            const keys = Object.keys(value as Record<string, unknown>);
+            const keys = Object.keys(obj);
             for (const key of keys) {
               if (/(image|thumbnail)/i.test(key)) {
-                collect((value as Record<string, unknown>)[key], depth + 1);
+                collect(obj[key], depth + 1, effectiveScore);
               }
             }
           };
@@ -483,7 +506,7 @@ async function fetchPreviewImageFromTab(tabId: number): Promise<string | null> {
             if (!raw) continue;
             try {
               const parsed = JSON.parse(raw);
-              collect(parsed, 0);
+              collect(parsed, 0, 400);
             } catch {
               // ignore malformed JSON-LD entries
             }
@@ -514,12 +537,31 @@ async function fetchPreviewImageFromTab(tabId: number): Promise<string | null> {
         };
 
         const scoreForImageDimensions = (img: HTMLImageElement): number => {
-          const width = img.naturalWidth || img.width || 0;
-          const height = img.naturalHeight || img.height || 0;
+          // Use both natural dimensions (file size) and rendered dimensions (display size).
+          // Modern sites often serve smaller files that render larger via CSS/responsive images.
+          const naturalW = img.naturalWidth || 0;
+          const naturalH = img.naturalHeight || 0;
+          const rect = img.getBoundingClientRect();
+          const renderedW = rect.width || 0;
+          const renderedH = rect.height || 0;
+
+          // Use the larger of natural vs rendered for scoring (handles responsive images)
+          const width = Math.max(naturalW, renderedW);
+          const height = Math.max(naturalH, renderedH);
+
           let score = 0;
-          if (width >= 400 && height >= 400) score += 140;
+
+          // Bonus for large images (these are likely hero/product images)
+          if (width >= 500 && height >= 500) score += 220;
+          else if (width >= 400 && height >= 400) score += 140;
           else if (width >= 200 && height >= 200) score += 90;
           else if (width >= 120 && height >= 120) score += 50;
+
+          // Extra bonus for very large rendered images (500+ is almost always the main content)
+          if (renderedW >= 500 && renderedH >= 500) score += 180;
+          else if (renderedW >= 400 && renderedH >= 400) score += 100;
+
+          // Penalty for tiny images (icons, spacers)
           if (width > 0 && height > 0) {
             if (width <= 80 || height <= 80) {
               score -= 200;
@@ -528,6 +570,15 @@ async function fetchPreviewImageFromTab(tabId: number): Promise<string | null> {
               score -= 120;
             }
           }
+
+          // Penalty for images in nav/footer (likely logos, not content)
+          // Note: We skip <header> here because some sites put hero images inside header elements
+          // But nav and footer almost never contain the main content image
+          const inNavOrFooter = !!img.closest('nav, footer, [role="navigation"], [role="contentinfo"]');
+          if (inNavOrFooter) {
+            score -= 250;
+          }
+
           return score;
         };
 
@@ -1172,13 +1223,40 @@ export function MinimalClipEditor({
 
         <div className="flex items-stretch gap-2">
           <div className="flex min-w-0 flex-1 flex-col gap-1 text-sm">
-            <div className="flex h-full min-w-0 items-center gap-2 overflow-hidden rounded-t-md border border-b-0 border-border/60 px-1.5 py-1 text-xs text-muted-foreground">
-              {faviconUrl && !faviconError ? (
-                <img src={faviconUrl} alt="" className="size-4 shrink-0" />
-              ) : (
-                <LinkIcon className="size-4 shrink-0" />
-              )}
-              <span className="truncate">{formatDisplayUrl(url) || 'unknown'}</span>
+            <div className="flex min-w-0 flex-col overflow-hidden rounded-t-md border border-b-0 border-border/60 text-xs text-muted-foreground">
+              <div className="flex min-w-0 items-center gap-2 px-1.5 py-1">
+                {faviconUrl && !faviconError ? (
+                  <img src={faviconUrl} alt="" className="size-4 shrink-0" />
+                ) : (
+                  <LinkIcon className="size-4 shrink-0" />
+                )}
+                <span className="truncate">{formatDisplayUrl(url) || 'unknown'}</span>
+              </div>
+              {flattenedFolders && flattenedFolders.length > 0 && onFolderChange ? (
+                <div className="pb-0.5 pl-[30px] pr-1.5">
+                  <Select value={selectedFolder} onValueChange={onFolderChange}>
+                    <SelectTrigger className={`h-auto w-auto min-w-0 flex-shrink border-0 bg-transparent p-0 shadow-none hover:bg-transparent focus:ring-0 focus:outline-none focus:ring-offset-0 text-xs text-muted-foreground justify-start gap-0.5${!selectedFolder || selectedFolder === 'Uncategorized' ? ' opacity-50' : ''}`}>
+                      <FolderIcon className="h-3 w-3 shrink-0 mr-0.5" />
+                      <span className="truncate max-w-[100px]">{!selectedFolder || selectedFolder === 'Uncategorized' ? 'None' : selectedFolder}</span>
+                    </SelectTrigger>
+                    <SelectContent className="max-w-[200px] min-w-0">
+                      <SelectItem value="Uncategorized" className="text-xs py-1 pr-6">None</SelectItem>
+                      {flattenedFolders.map(({ folder, depth }) => (
+                        <SelectItem key={folder.id} value={folder.name} className="text-xs py-1 pr-6 overflow-hidden">
+                          <span className="flex items-center overflow-hidden">
+                            {depth > 0 && (
+                              <span className="text-muted-foreground/50 shrink-0" style={{ marginLeft: (depth - 1) * 10 }}>
+                                └
+                              </span>
+                            )}
+                            <span className="truncate">{folder.name}</span>
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2">
@@ -1188,14 +1266,14 @@ export function MinimalClipEditor({
                   <button
                     type="button"
                     onClick={handleOpenList}
-                    aria-label="View comments"
+                    aria-label="View saved"
                     className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border/80 text-foreground transition hover:bg-accent hover:text-accent-foreground"
                   >
-                    <HistoryIcon className="size-4" />
+                    <img src="/logo.svg" alt="Saved" className="size-5" draggable={false} />
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  <p>All comments</p>
+                  <p>Saved</p>
                 </TooltipContent>
               </Tooltip>
             ) : null}
@@ -1284,37 +1362,12 @@ export function MinimalClipEditor({
           />
         </div>
 
-        <div className="flex items-center justify-between gap-2">
-          {flattenedFolders && flattenedFolders.length > 0 && onFolderChange ? (
-            <Select value={selectedFolder} onValueChange={onFolderChange}>
-              <SelectTrigger className="h-auto border-0 bg-transparent p-0 shadow-none hover:bg-transparent focus:ring-0 text-xs text-muted-foreground gap-1 max-w-[140px]">
-                <FolderIcon className="h-3 w-3 shrink-0" />
-                <span className="truncate">{selectedFolder || 'Uncategorized'}</span>
-              </SelectTrigger>
-              <SelectContent className="max-w-[280px]">
-                <SelectItem value="Uncategorized">Uncategorized</SelectItem>
-                {flattenedFolders.map(({ folder, depth }) => (
-                  <SelectItem key={folder.id} value={folder.name} className="overflow-hidden">
-                    <span className="flex items-center overflow-hidden">
-                      {depth > 0 && (
-                        <span className="text-muted-foreground/50 shrink-0" style={{ marginLeft: (depth - 1) * 10 }}>
-                          └
-                        </span>
-                      )}
-                      <span className="truncate">{folder.name}</span>
-                    </span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : (
-            <div />
-          )}
+        <div className="flex items-center justify-end">
           <button
             type="button"
             onClick={handleSubmit}
             disabled={status === 'saving' || !url || !draft.trim()}
-            className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition disabled:cursor-not-allowed disabled:opacity-30 hover:bg-primary/90"
+            className="shrink-0 inline-flex items-center justify-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition disabled:cursor-not-allowed disabled:opacity-30 hover:bg-primary/90"
           >
             {status === 'saving' ? 'Adding…' : 'Add comment'}
             {status === 'idle' && <span className="text-xs opacity-70">⌘↵</span>}

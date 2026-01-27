@@ -106,44 +106,6 @@ function MoreHorizontalIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
-function PanelLeftCloseIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      {...props}
-    >
-      <rect width="18" height="18" x="3" y="3" rx="2" />
-      <path d="M9 3v18" />
-      <path d="m16 15-3-3 3-3" />
-    </svg>
-  );
-}
-
-function PanelLeftOpenIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      {...props}
-    >
-      <rect width="18" height="18" x="3" y="3" rx="2" />
-      <path d="M9 3v18" />
-      <path d="m14 9 3 3-3 3" />
-    </svg>
-  );
-}
-
 function LayersIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg
@@ -203,18 +165,37 @@ type DropPosition = 'before' | 'inside' | 'after' | null;
 type FolderSidebarProps = {
   folders: Folder[];
   selectedFolder: string | null;
-  collapsed: boolean;
   totalThreadCount: number;
   expandedFolders: Set<string>;
   onSelectFolder: (name: string | null) => void;
   onCreateFolder: (name: string, parentId?: string) => Promise<void>;
   onRenameFolder: (oldName: string, newName: string) => Promise<void>;
   onDeleteFolder: (name: string) => Promise<void>;
-  onToggleCollapsed: () => void;
   onToggleExpanded: (id: string) => void;
   onNestFolder: (folderId: string, targetParentId: string | null) => Promise<void>;
   onReorderFolder: (folderId: string, beforeId?: string, afterId?: string) => Promise<void>;
+  // Thread drag-drop props
+  activeThreadDrag?: boolean;
+  threadDropTargetId?: string | null;
+  // Logo slot rendered at the top
+  logoSlot?: React.ReactNode;
 };
+
+// Folder drop target for threads (separate from folder-to-folder drops)
+function FolderThreadDropTarget({ folderName, isActive }: { folderName: string; isActive: boolean }) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: `folder-drop:${folderName}`,
+  });
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={`absolute inset-0 pointer-events-auto z-10 rounded-[3px] ${
+        isOver || isActive ? 'ring-2 ring-primary ring-inset' : ''
+      }`}
+    />
+  );
+}
 
 // Collect all folder names from tree
 function getAllFolderNames(folders: Folder[]): Set<string> {
@@ -342,7 +323,7 @@ function DraggableFolderItem({
 
       {/* Drop indicator: inside */}
       {dropPosition === 'inside' && (
-        <div className="absolute inset-0 ring-2 ring-primary ring-inset rounded-lg pointer-events-none z-10" />
+        <div className="absolute inset-0 ring-2 ring-primary ring-inset rounded-[3px] pointer-events-none z-10" />
       )}
 
       {/* Drop indicator: after */}
@@ -353,7 +334,7 @@ function DraggableFolderItem({
       <button
         type="button"
         style={{ paddingLeft: 12 + indentPadding }}
-        className={`group relative flex w-full min-w-0 items-center gap-2 rounded-lg pr-3 py-2 text-sm overflow-hidden transition-colors ${
+        className={`group relative flex w-full min-w-0 items-center gap-2 rounded-[3px] pr-3 py-2 text-sm overflow-hidden ${
           isSelected
             ? 'bg-primary/15 text-foreground'
             : 'text-foreground/80 hover:bg-accent/40 hover:text-foreground'
@@ -367,7 +348,7 @@ function DraggableFolderItem({
           <span
             role="button"
             tabIndex={0}
-            className="absolute -left-1 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-accent/60 transition-colors"
+            className="absolute -left-1 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-accent/60"
             onClick={(e) => {
               e.stopPropagation();
               onToggleExpand();
@@ -380,7 +361,7 @@ function DraggableFolderItem({
             }}
           >
             <ChevronRightIcon
-              className={`h-3 w-3 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+              className={`h-3 w-3 ${isExpanded ? 'rotate-90' : ''}`}
             />
           </span>
         )}
@@ -396,7 +377,7 @@ function DraggableFolderItem({
         {/* Right side - fixed width container for count/menu */}
         <div className="relative w-8 shrink-0 flex items-center justify-end">
           <span
-            className={`text-xs tabular-nums transition-opacity group-hover:opacity-0 ${
+            className={`text-xs tabular-nums group-hover:opacity-0 ${
               isSelected ? 'text-foreground/70' : 'text-muted-foreground'
             }`}
           >
@@ -409,7 +390,7 @@ function DraggableFolderItem({
               <div
                 role="button"
                 tabIndex={0}
-                className={`absolute inset-0 flex items-center justify-end transition-opacity opacity-0 group-hover:opacity-50 hover:!opacity-100`}
+                className={`absolute inset-0 flex items-center justify-end opacity-0 group-hover:opacity-50 hover:!opacity-100`}
                 onClick={(e) => e.stopPropagation()}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
@@ -440,7 +421,7 @@ function DraggableFolderItem({
 
 function FolderDragPreview({ folder }: { folder: Folder }) {
   return (
-    <div className="flex items-center gap-2 rounded-lg bg-background border border-border px-3 py-2 text-sm shadow-lg">
+    <div className="flex items-center gap-2 rounded-[3px] bg-background border border-border px-3 py-2 text-sm shadow-lg">
       <FolderIcon className="h-4 w-4" />
       <span>{folder.name}</span>
     </div>
@@ -450,17 +431,18 @@ function FolderDragPreview({ folder }: { folder: Folder }) {
 export function FolderSidebar({
   folders,
   selectedFolder,
-  collapsed,
   totalThreadCount,
   expandedFolders,
   onSelectFolder,
   onCreateFolder,
   onRenameFolder,
   onDeleteFolder,
-  onToggleCollapsed,
   onToggleExpanded,
   onNestFolder,
   onReorderFolder,
+  activeThreadDrag,
+  threadDropTargetId,
+  logoSlot,
 }: FolderSidebarProps) {
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
@@ -633,12 +615,17 @@ export function FolderSidebar({
     try {
       if (finalDropPosition === 'inside') {
         await onNestFolder(activeId!, finalOverId);
-      } else if (finalDropPosition === 'before') {
-        await onNestFolder(activeId!, null);
-        await onReorderFolder(activeId!, finalOverId, undefined);
-      } else if (finalDropPosition === 'after') {
-        await onNestFolder(activeId!, null);
-        await onReorderFolder(activeId!, undefined, finalOverId);
+      } else if (finalDropPosition === 'before' || finalDropPosition === 'after') {
+        // When dropping before/after a folder, use the TARGET's parent
+        // so the dragged folder becomes a sibling, not moved to root
+        const targetFolder = findFolderById(folders, finalOverId);
+        const targetParentId = targetFolder?.parentId ?? null;
+        await onNestFolder(activeId!, targetParentId);
+        if (finalDropPosition === 'before') {
+          await onReorderFolder(activeId!, finalOverId, undefined);
+        } else {
+          await onReorderFolder(activeId!, undefined, finalOverId);
+        }
       }
     } catch (err) {
       console.error('Failed to move folder:', err);
@@ -653,113 +640,73 @@ export function FolderSidebar({
 
   const activeFolder = activeId ? findFolderById(folders, activeId) : null;
 
-  if (collapsed) {
-    return (
-      <TooltipProvider delayDuration={0}>
-        <div className="flex flex-col items-center py-4 px-2 border-r bg-muted/20">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 text-muted-foreground hover:text-foreground transition-colors"
-                onClick={onToggleCollapsed}
-              >
-                <PanelLeftOpenIcon className="h-4 w-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Open sidebar</p>
-            </TooltipContent>
-          </Tooltip>
-        </div>
-      </TooltipProvider>
-    );
-  }
-
   return (
     <div className="flex flex-col w-56 border-r bg-muted/20 overflow-hidden">
-      {/* Header */}
+      {/* Header: Logo + Collections + New folder button */}
       <TooltipProvider delayDuration={0}>
-        <div className="flex items-center justify-between px-3 py-2.5 border-b border-border/50">
-          <span className="text-sm font-medium text-foreground/80">Collections</span>
-          <div className="flex items-center gap-0.5">
-            <Dialog open={createDialogOpen} onOpenChange={(open) => {
-              setCreateDialogOpen(open);
-              if (!open) setFolderError(null);
-            }}>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <DialogTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
-                    >
-                      <PlusIcon className="h-4 w-4" />
-                    </Button>
-                  </DialogTrigger>
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p>New folder</p>
-                </TooltipContent>
-              </Tooltip>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>Create Folder</DialogTitle>
-                </DialogHeader>
-                <div className="space-y-4 pt-4">
-                  <Input
-                    placeholder="Folder name"
-                    value={newFolderName}
-                    onChange={(e) => {
-                      setNewFolderName(e.target.value);
-                      setFolderError(null);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        void handleCreateFolder();
-                      }
-                    }}
-                    autoFocus
-                  />
-                  {folderError && (
-                    <p className="text-sm text-destructive">{folderError}</p>
-                  )}
-                  <div className="flex justify-end gap-2">
-                    <Button
-                      variant="outline"
-                      onClick={() => {
-                        setNewFolderName('');
-                        setFolderError(null);
-                        setCreateDialogOpen(false);
-                      }}
-                    >
-                      Cancel
-                    </Button>
-                    <Button onClick={handleCreateFolder} disabled={creating || !newFolderName.trim()}>
-                      {creating ? 'Creating...' : 'Create'}
-                    </Button>
-                  </div>
-                </div>
-              </DialogContent>
-            </Dialog>
+        <div className="flex items-center h-12 px-3 border-b border-border/50 gap-2">
+          {logoSlot}
+          <span className="text-sm font-medium text-foreground/80 flex-1">Collections</span>
+          <Dialog open={createDialogOpen} onOpenChange={(open) => {
+            setCreateDialogOpen(open);
+            if (!open) setFolderError(null);
+          }}>
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
-                  onClick={onToggleCollapsed}
-                >
-                  <PanelLeftCloseIcon className="h-4 w-4" />
-                </Button>
+                <DialogTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-accent/50"
+                  >
+                    <PlusIcon className="h-4 w-4" />
+                  </Button>
+                </DialogTrigger>
               </TooltipTrigger>
               <TooltipContent>
-                <p>Close sidebar</p>
+                <p>New folder</p>
               </TooltipContent>
             </Tooltip>
-          </div>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Create Folder</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4 pt-4">
+                <Input
+                  placeholder="Folder name"
+                  value={newFolderName}
+                  onChange={(e) => {
+                    setNewFolderName(e.target.value);
+                    setFolderError(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      void handleCreateFolder();
+                    }
+                  }}
+                  autoFocus
+                />
+                {folderError && (
+                  <p className="text-sm text-destructive">{folderError}</p>
+                )}
+                <div className="flex justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      setNewFolderName('');
+                      setFolderError(null);
+                      setCreateDialogOpen(false);
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                  <Button onClick={handleCreateFolder} disabled={creating || !newFolderName.trim()}>
+                    {creating ? 'Creating...' : 'Create'}
+                  </Button>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
         </div>
       </TooltipProvider>
 
@@ -769,7 +716,7 @@ export function FolderSidebar({
           <button
             type="button"
             style={{ paddingLeft: 12 }}
-            className={`group relative flex w-full items-center gap-2 rounded-lg pr-3 py-2 text-sm cursor-pointer overflow-hidden transition-colors ${
+            className={`group relative flex w-full items-center gap-2 rounded-[3px] pr-3 py-2 text-sm cursor-pointer overflow-hidden ${
               selectedFolder === null
                 ? 'bg-primary/15 text-foreground'
                 : 'text-foreground/80 hover:bg-accent/40 hover:text-foreground'
@@ -777,14 +724,14 @@ export function FolderSidebar({
             onClick={() => onSelectFolder(null)}
           >
             <LayersIcon
-              className={`h-4 w-4 transition-colors ${
+              className={`h-4 w-4 ${
                 selectedFolder === null ? 'text-foreground' : 'text-muted-foreground group-hover:text-foreground/70'
               }`}
             />
             <span className="flex-1 min-w-0 truncate text-left font-medium">All</span>
             <div className="w-8 shrink-0 flex items-center justify-end">
               <span
-                className={`text-xs tabular-nums transition-colors ${
+                className={`text-xs tabular-nums ${
                   selectedFolder === null ? 'text-foreground/70' : 'text-muted-foreground'
                 }`}
               >
@@ -795,34 +742,42 @@ export function FolderSidebar({
 
           {/* Uncategorized - Secondary */}
           {uncategorizedFolder && (
-            <button
-              type="button"
-              style={{ paddingLeft: 12 }}
-              className={`group relative flex w-full items-center gap-2 rounded-lg pr-3 py-2 text-sm cursor-pointer overflow-hidden transition-colors ${
-                selectedFolder === 'Uncategorized'
-                  ? 'bg-primary/15 text-foreground'
-                  : 'text-foreground/80 hover:bg-accent/40 hover:text-foreground'
-              }`}
-              onClick={() => onSelectFolder('Uncategorized')}
-            >
-              <InboxIcon
-                className={`h-4 w-4 transition-colors ${
+            <div className="relative">
+              {activeThreadDrag && (
+                <FolderThreadDropTarget
+                  folderName="Uncategorized"
+                  isActive={threadDropTargetId === 'folder-drop:Uncategorized'}
+                />
+              )}
+              <button
+                type="button"
+                style={{ paddingLeft: 12 }}
+                className={`group relative flex w-full items-center gap-2 rounded-[3px] pr-3 py-2 text-sm cursor-pointer overflow-hidden ${
                   selectedFolder === 'Uncategorized'
-                    ? 'text-foreground'
-                    : 'text-muted-foreground group-hover:text-foreground/70'
+                    ? 'bg-primary/15 text-foreground'
+                    : 'text-foreground/80 hover:bg-accent/40 hover:text-foreground'
                 }`}
-              />
-              <span className="flex-1 min-w-0 truncate text-left">Unsorted</span>
-              <div className="w-8 shrink-0 flex items-center justify-end">
-                <span
-                  className={`text-xs tabular-nums transition-colors ${
-                    selectedFolder === 'Uncategorized' ? 'text-foreground/70' : 'text-muted-foreground'
+                onClick={() => onSelectFolder('Uncategorized')}
+              >
+                <InboxIcon
+                  className={`h-4 w-4 ${
+                    selectedFolder === 'Uncategorized'
+                      ? 'text-foreground'
+                      : 'text-muted-foreground group-hover:text-foreground/70'
                   }`}
-                >
-                  {uncategorizedFolder.threadCount}
-                </span>
-              </div>
-            </button>
+                />
+                <span className="flex-1 min-w-0 truncate text-left">Unsorted</span>
+                <div className="w-8 shrink-0 flex items-center justify-end">
+                  <span
+                    className={`text-xs tabular-nums ${
+                      selectedFolder === 'Uncategorized' ? 'text-foreground/70' : 'text-muted-foreground'
+                    }`}
+                  >
+                    {uncategorizedFolder.threadCount}
+                  </span>
+                </div>
+              </button>
+            </div>
           )}
 
           {/* Divider */}
@@ -837,7 +792,13 @@ export function FolderSidebar({
             onDragCancel={handleDragCancel}
           >
             {flattenedFolders.map(({ folder, depth }) => (
-              <div key={folder.id} data-folder-id={folder.id} className="w-full overflow-hidden">
+              <div key={folder.id} data-folder-id={folder.id} className="relative w-full overflow-hidden">
+                {activeThreadDrag && (
+                  <FolderThreadDropTarget
+                    folderName={folder.name}
+                    isActive={threadDropTargetId === `folder-drop:${folder.name}`}
+                  />
+                )}
                 <DraggableFolderItem
                   folder={folder}
                   depth={depth}

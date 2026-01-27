@@ -336,6 +336,23 @@ export async function moveThread(url: string, toFolder: string): Promise<ClipThr
   return thread;
 }
 
+// ============================================================================
+// Import Operations
+// ============================================================================
+
+export type ImportBookmark = {
+  url: string;
+  title?: string;
+  faviconUrl?: string;
+  folder?: string;
+};
+
+export async function importBookmarks(
+  bookmarks: ImportBookmark[]
+): Promise<{ imported: number; skipped: number }> {
+  return await sendMessage<{ imported: number; skipped: number }>({ type: 'importBookmarks', bookmarks });
+}
+
 /**
  * Move a folder into another folder (or to root if targetParentId is null)
  */

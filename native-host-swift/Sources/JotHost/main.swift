@@ -138,6 +138,13 @@ struct ParsedDocument {
 
 // MARK: - Message Types
 
+struct ImportBookmark: Codable {
+    var url: String
+    var title: String?
+    var faviconUrl: String?
+    var folder: String?
+}
+
 struct Request: Codable {
     var id: Int
     var type: String
@@ -158,6 +165,7 @@ struct Request: Codable {
     var targetParentId: String?  // For nestFolder (folder to nest into, null for root)
     var beforeId: String?     // For reorderFolder (place before this folder)
     var afterId: String?      // For reorderFolder (place after this folder)
+    var bookmarks: [ImportBookmark]?  // For importBookmarks
 }
 
 struct Response: Encodable {
@@ -684,10 +692,46 @@ func handleSetConfig(vaultPath: String?, commentFolder: String?) -> Response {
         // Run migration if needed
         migrateFromLegacyFormat(config: config)
 
-        // Initialize empty document if needed
+        // Initialize with self-documenting template if needed
         if !FileManager.default.fileExists(atPath: config.bookmarksFile.path) {
-            let doc = ParsedDocument(folders: [ParsedFolder(name: "Uncategorized", entries: [])])
-            try writeDocument(doc, config: config)
+            let initialContent = """
+            # My Web Clips
+
+            <!--
+            JOT BOOKMARKS FORMAT GUIDE
+
+            FOLDERS use markdown heading levels:
+              ## FolderName        = Level 1 (root folder)
+              ### SubFolder        = Level 2 (nested inside level 1)
+              #### DeepFolder      = Level 3 (max depth, no deeper nesting allowed)
+
+            BOOKMARKS use this format:
+              - **[Page Title](https://example.com)** — Jan 24, 2025
+                > Optional comment line 1
+                > Optional comment line 2
+
+            FORMAT DETAILS:
+              - Date format: "MMM d, yyyy" (e.g., "Jan 24, 2025")
+              - Comments are indented with "  > " (2 spaces followed by > and space)
+              - Bookmarks without comments are valid (just omit the > lines)
+              - URLs are normalized (tracking params stripped, www removed)
+              - Metadata (favicons, preview images) stored in .jot-meta.json
+
+            FOLDER OPERATIONS (via native messaging API):
+              - createFolder(name, parentId?) - creates folder, parentId for nesting
+              - renameFolder(oldPath, newPath) - rename a folder
+              - deleteFolder(path, recursive?) - delete folder (recursive=true if not empty)
+              - nestFolder(folderId, targetParentId) - move folder into another
+              - moveThread(url, toFolder) - move bookmark to different folder
+
+            SPECIAL FOLDERS:
+              - "Uncategorized" is the default folder, cannot be renamed or deleted
+            -->
+
+            ## Uncategorized
+
+            """
+            try initialContent.write(to: config.bookmarksFile, atomically: true, encoding: .utf8)
         }
 
         return Response(id: 0, ok: true, data: AnyCodable(["vaultPath": config.vaultPath, "commentFolder": config.commentFolder]), error: nil, code: nil)
@@ -1359,6 +1403,84 @@ func handleReorderFolder(folderId: String?, beforeId: String?, afterId: String?)
     }
 }
 
+// MARK: - Import Bookmarks
+
+func handleImportBookmarks(bookmarks: [ImportBookmark]?) -> Response {
+    guard let bookmarks = bookmarks, !bookmarks.isEmpty, let config = Config.read() else {
+        return Response(id: 0, ok: false, data: nil, error: "bookmarks array is required", code: "INVALID_INPUT")
+    }
+
+    var doc = readDocument(config: config)
+    var meta = Metadata.read(from: config.metadataFile)
+    let now = Int64(Date().timeIntervalSince1970 * 1000)
+
+    // Collect all existing URLs for duplicate detection
+    var existingUrls = Set<String>()
+    for folder in doc.folders {
+        for entry in folder.entries {
+            existingUrls.insert(entry.url)
+        }
+    }
+
+    var imported = 0
+    var skipped = 0
+
+    for bookmark in bookmarks {
+        let normalized = normalizeUrl(bookmark.url)
+
+        // Skip duplicates
+        if existingUrls.contains(normalized) {
+            skipped += 1
+            continue
+        }
+
+        let title = bookmark.title ?? {
+            // Fall back to domain hostname
+            if let components = URLComponents(string: bookmark.url) {
+                return components.host ?? "Untitled"
+            }
+            return "Untitled"
+        }()
+
+        let folderName = bookmark.folder ?? "Uncategorized"
+
+        let newEntry = ParsedEntry(
+            url: normalized,
+            title: title,
+            date: formatDate(now),
+            comments: []
+        )
+
+        // Find or create target folder
+        if let fi = doc.folders.firstIndex(where: { $0.name == folderName }) {
+            doc.folders[fi].entries.append(newEntry)
+        } else {
+            // Auto-create the folder
+            doc.folders.append(ParsedFolder(name: folderName, level: 1, entries: [newEntry]))
+        }
+
+        // Store metadata (favicon)
+        meta.entries[normalized] = EntryMeta(
+            favicon: bookmark.faviconUrl,
+            previewImage: nil,
+            createdAt: now
+        )
+
+        existingUrls.insert(normalized)
+        imported += 1
+    }
+
+    do {
+        try writeDocument(doc, config: config)
+        try meta.write(to: config.metadataFile)
+
+        let result: [String: Any] = ["imported": imported, "skipped": skipped]
+        return Response(id: 0, ok: true, data: AnyCodable(result), error: nil, code: nil)
+    } catch {
+        return Response(id: 0, ok: false, data: nil, error: error.localizedDescription, code: "IO_ERROR")
+    }
+}
+
 // MARK: - Message Router
 
 func handleRequest(_ request: Request) -> Response {
@@ -1397,6 +1519,8 @@ func handleRequest(_ request: Request) -> Response {
         response = handleNestFolder(folderId: request.folderId, targetParentId: request.targetParentId)
     case "reorderFolder":
         response = handleReorderFolder(folderId: request.folderId, beforeId: request.beforeId, afterId: request.afterId)
+    case "importBookmarks":
+        response = handleImportBookmarks(bookmarks: request.bookmarks)
     default:
         response = Response(id: 0, ok: false, data: nil, error: "Unknown message type: \(request.type)", code: "UNKNOWN_TYPE")
     }

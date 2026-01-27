@@ -120,14 +120,14 @@ function PopupApp() {
                   <button
                     type="button"
                     onClick={handleOpenList}
-                    aria-label="View comments"
+                    aria-label="View saved"
                     className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border/80 text-foreground transition hover:bg-accent hover:text-accent-foreground"
                   >
-                    <HistoryIcon className="size-4" />
+                    <img src="/logo.svg" alt="Saved" className="size-5" draggable={false} />
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  <p>All comments</p>
+                  <p>Saved</p>
                 </TooltipContent>
               </Tooltip>
             </div>
@@ -153,14 +153,14 @@ function PopupApp() {
                   <button
                     type="button"
                     onClick={handleOpenList}
-                    aria-label="View comments"
+                    aria-label="View saved"
                     className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border/80 text-foreground transition hover:bg-accent hover:text-accent-foreground"
                   >
-                    <HistoryIcon className="size-4" />
+                    <img src="/logo.svg" alt="Saved" className="size-5" draggable={false} />
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  <p>All comments</p>
+                  <p>Saved</p>
                 </TooltipContent>
               </Tooltip>
             </div>
