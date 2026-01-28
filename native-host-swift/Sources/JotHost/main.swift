@@ -945,8 +945,14 @@ func handleHasComments(url: String?) -> Response {
 
     let normalized = normalizeUrl(url)
     let doc = readDocument(config: config)
+
     // Use recursive search to find entries in nested folders
-    let hasComments = findEntryRecursive(in: doc, url: normalized) != nil
+    // Only return true if the entry exists AND has at least one comment
+    var hasComments = false
+    if let location = findEntryRecursive(in: doc, url: normalized),
+       let entry = getEntryFromFolder(doc, folderId: location.folderId, entryIndex: location.entryIndex) {
+        hasComments = !entry.comments.isEmpty
+    }
 
     return Response(id: 0, ok: true, data: AnyCodable(hasComments), error: nil, code: nil)
 }
