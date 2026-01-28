@@ -166,6 +166,7 @@ struct Request: Codable {
     var beforeId: String?     // For reorderFolder (place before this folder)
     var afterId: String?      // For reorderFolder (place after this folder)
     var bookmarks: [ImportBookmark]?  // For importBookmarks
+    var newTitle: String?  // For renameThread
 }
 
 struct Response: Encodable {
@@ -500,6 +501,43 @@ func findEntryRecursive(in doc: ParsedDocument, url: String) -> EntryLocation? {
     return search(folders: doc.folders, parentPath: nil)
 }
 
+// Get an entry from a folder by folder ID and entry index
+func getEntryFromFolder(_ doc: ParsedDocument, folderId: String, entryIndex: Int) -> ParsedEntry? {
+    func search(folders: [ParsedFolder], parentPath: String?) -> ParsedEntry? {
+        for folder in folders {
+            let id = folder.id(parentPath: parentPath)
+            if id == folderId && entryIndex < folder.entries.count {
+                return folder.entries[entryIndex]
+            }
+            let childPath = folder.path(parentPath: parentPath)
+            if let found = search(folders: folder.children, parentPath: childPath) {
+                return found
+            }
+        }
+        return nil
+    }
+    return search(folders: doc.folders, parentPath: nil)
+}
+
+// Update an entry in a folder by folder ID and entry index (appends a comment)
+func appendCommentToEntry(_ doc: inout ParsedDocument, folderId: String, entryIndex: Int, comment: String) -> Bool {
+    func update(folders: inout [ParsedFolder], parentPath: String?) -> Bool {
+        for i in folders.indices {
+            let id = folders[i].id(parentPath: parentPath)
+            if id == folderId && entryIndex < folders[i].entries.count {
+                folders[i].entries[entryIndex].comments.append(comment)
+                return true
+            }
+            let childPath = folders[i].path(parentPath: parentPath)
+            if update(folders: &folders[i].children, parentPath: childPath) {
+                return true
+            }
+        }
+        return false
+    }
+    return update(folders: &doc.folders, parentPath: nil)
+}
+
 // Remove an entry from a folder by folder ID, returns the removed entry
 func removeEntryFromFolder(_ doc: inout ParsedDocument, folderId: String, entryIndex: Int) -> ParsedEntry? {
     func removeFrom(folders: inout [ParsedFolder], parentPath: String?) -> ParsedEntry? {
@@ -516,6 +554,44 @@ func removeEntryFromFolder(_ doc: inout ParsedDocument, folderId: String, entryI
         return nil
     }
     return removeFrom(folders: &doc.folders, parentPath: nil)
+}
+
+// Remove a comment from an entry by folder ID and entry index
+func removeCommentFromEntry(_ doc: inout ParsedDocument, folderId: String, entryIndex: Int, commentIndex: Int) -> Bool {
+    func update(folders: inout [ParsedFolder], parentPath: String?) -> Bool {
+        for i in folders.indices {
+            let id = folders[i].id(parentPath: parentPath)
+            if id == folderId && entryIndex < folders[i].entries.count && commentIndex < folders[i].entries[entryIndex].comments.count {
+                folders[i].entries[entryIndex].comments.remove(at: commentIndex)
+                return true
+            }
+            let childPath = folders[i].path(parentPath: parentPath)
+            if update(folders: &folders[i].children, parentPath: childPath) {
+                return true
+            }
+        }
+        return false
+    }
+    return update(folders: &doc.folders, parentPath: nil)
+}
+
+// Update the title of an entry by folder ID and entry index
+func updateEntryTitle(_ doc: inout ParsedDocument, folderId: String, entryIndex: Int, newTitle: String) -> Bool {
+    func update(folders: inout [ParsedFolder], parentPath: String?) -> Bool {
+        for i in folders.indices {
+            let id = folders[i].id(parentPath: parentPath)
+            if id == folderId && entryIndex < folders[i].entries.count {
+                folders[i].entries[entryIndex].title = newTitle
+                return true
+            }
+            let childPath = folders[i].path(parentPath: parentPath)
+            if update(folders: &folders[i].children, parentPath: childPath) {
+                return true
+            }
+        }
+        return false
+    }
+    return update(folders: &doc.folders, parentPath: nil)
 }
 
 // Add an entry to a folder by folder ID
@@ -869,7 +945,8 @@ func handleHasComments(url: String?) -> Response {
 
     let normalized = normalizeUrl(url)
     let doc = readDocument(config: config)
-    let hasComments = findEntry(in: doc, url: normalized) != nil
+    // Use recursive search to find entries in nested folders
+    let hasComments = findEntryRecursive(in: doc, url: normalized) != nil
 
     return Response(id: 0, ok: true, data: AnyCodable(hasComments), error: nil, code: nil)
 }
@@ -883,12 +960,13 @@ func handleGetThread(url: String?) -> Response {
     let doc = readDocument(config: config)
     let metadata = Metadata.read(from: config.metadataFile)
 
-    guard let (fi, ei) = findEntry(in: doc, url: normalized) else {
+    // Use recursive search to find entries in nested folders
+    guard let location = findEntryRecursive(in: doc, url: normalized),
+          let entry = getEntryFromFolder(doc, folderId: location.folderId, entryIndex: location.entryIndex) else {
         return Response(id: 0, ok: true, data: nil, error: nil, code: nil)
     }
 
-    let entry = doc.folders[fi].entries[ei]
-    let thread = entryToThread(entry, folder: doc.folders[fi].name, metadata: metadata)
+    let thread = entryToThread(entry, folder: location.folderName, metadata: metadata)
 
     return Response(id: 0, ok: true, data: AnyCodable(threadToDict(thread)), error: nil, code: nil)
 }
@@ -905,12 +983,8 @@ func handleGetAllThreads() -> Response {
     let metadata = Metadata.read(from: config.metadataFile)
     var threads: [[String: Any]] = []
 
-    for folder in doc.folders {
-        for entry in folder.entries {
-            let thread = entryToThread(entry, folder: folder.name, metadata: metadata)
-            threads.append(threadToDict(thread))
-        }
-    }
+    // Collect threads from all folders including nested ones
+    collectAllThreads(from: doc.folders, metadata: metadata, threads: &threads)
 
     // Sort by updatedAt descending
     threads.sort { ($0["updatedAt"] as? Int64 ?? 0) > ($1["updatedAt"] as? Int64 ?? 0) }
@@ -935,9 +1009,12 @@ func handleAppendComment(url: String?, body: String?, metadata: ClipMetadata?, f
     let now = Int64(Date().timeIntervalSince1970 * 1000)
     let targetFolder = folder ?? "Uncategorized"
 
-    if let (fi, ei) = findEntry(in: doc, url: normalized) {
-        // Existing entry - add comment
-        doc.folders[fi].entries[ei].comments.append(body)
+    // Use recursive search to find entries in nested folders
+    if let location = findEntryRecursive(in: doc, url: normalized) {
+        // Existing entry - add comment using recursive update
+        guard appendCommentToEntry(&doc, folderId: location.folderId, entryIndex: location.entryIndex, comment: body) else {
+            return Response(id: 0, ok: false, data: nil, error: "Failed to update entry", code: "IO_ERROR")
+        }
 
         // Update metadata if provided
         if let m = metadata {
@@ -947,7 +1024,11 @@ func handleAppendComment(url: String?, body: String?, metadata: ClipMetadata?, f
             meta.entries[normalized] = entryMeta
         }
     } else {
-        // New entry
+        // New entry - first check if URL already exists anywhere (prevent duplicates)
+        if urlExistsInDocument(doc, url: normalized) {
+            return Response(id: 0, ok: false, data: nil, error: "URL already exists in another folder", code: "DUPLICATE_URL")
+        }
+
         let title = metadata?.title ?? "Untitled"
         let newEntry = ParsedEntry(
             url: normalized,
@@ -956,7 +1037,7 @@ func handleAppendComment(url: String?, body: String?, metadata: ClipMetadata?, f
             comments: [body]
         )
 
-        // Find or create target folder
+        // Find or create target folder (only at root level for new entries)
         if let fi = doc.folders.firstIndex(where: { $0.name == targetFolder }) {
             doc.folders[fi].entries.append(newEntry)
         } else {
@@ -975,10 +1056,12 @@ func handleAppendComment(url: String?, body: String?, metadata: ClipMetadata?, f
         try writeDocument(doc, config: config)
         try meta.write(to: config.metadataFile)
 
-        // Return the thread
-        let (fi, ei) = findEntry(in: doc, url: normalized)!
-        let entry = doc.folders[fi].entries[ei]
-        let thread = entryToThread(entry, folder: doc.folders[fi].name, metadata: meta)
+        // Return the thread using recursive search
+        guard let location = findEntryRecursive(in: doc, url: normalized),
+              let entry = getEntryFromFolder(doc, folderId: location.folderId, entryIndex: location.entryIndex) else {
+            return Response(id: 0, ok: false, data: nil, error: "Failed to retrieve updated entry", code: "IO_ERROR")
+        }
+        let thread = entryToThread(entry, folder: location.folderName, metadata: meta)
 
         return Response(id: 0, ok: true, data: AnyCodable(threadToDict(thread)), error: nil, code: nil)
     } catch {
@@ -995,13 +1078,14 @@ func handleDeleteComment(url: String?, commentId: String?) -> Response {
     var doc = readDocument(config: config)
     let meta = Metadata.read(from: config.metadataFile)
 
-    guard let (fi, ei) = findEntry(in: doc, url: normalized) else {
+    // Use recursive search to find entries in nested folders
+    guard let location = findEntryRecursive(in: doc, url: normalized),
+          let entry = getEntryFromFolder(doc, folderId: location.folderId, entryIndex: location.entryIndex) else {
         return Response(id: 0, ok: false, data: nil, error: "Thread not found", code: "NOT_FOUND")
     }
 
     // Find comment by index (commentId is based on timestamp, but we use index for simplicity)
     let commentIndex = Int(commentId) ?? -1
-    let entry = doc.folders[fi].entries[ei]
 
     // Try to find by matching the ID pattern (createdAt + index)
     var foundIndex: Int? = nil
@@ -1023,13 +1107,19 @@ func handleDeleteComment(url: String?, commentId: String?) -> Response {
         return Response(id: 0, ok: false, data: nil, error: "Comment not found", code: "NOT_FOUND")
     }
 
-    doc.folders[fi].entries[ei].comments.remove(at: idx)
+    // Remove comment using recursive update
+    guard removeCommentFromEntry(&doc, folderId: location.folderId, entryIndex: location.entryIndex, commentIndex: idx) else {
+        return Response(id: 0, ok: false, data: nil, error: "Failed to remove comment", code: "IO_ERROR")
+    }
 
     do {
         try writeDocument(doc, config: config)
 
-        let updatedEntry = doc.folders[fi].entries[ei]
-        let thread = entryToThread(updatedEntry, folder: doc.folders[fi].name, metadata: meta)
+        // Get updated entry using recursive search
+        guard let updatedEntry = getEntryFromFolder(doc, folderId: location.folderId, entryIndex: location.entryIndex) else {
+            return Response(id: 0, ok: false, data: nil, error: "Failed to retrieve updated entry", code: "IO_ERROR")
+        }
+        let thread = entryToThread(updatedEntry, folder: location.folderName, metadata: meta)
 
         return Response(id: 0, ok: true, data: AnyCodable(threadToDict(thread)), error: nil, code: nil)
     } catch {
@@ -1046,11 +1136,13 @@ func handleDeleteThread(url: String?) -> Response {
     var doc = readDocument(config: config)
     var meta = Metadata.read(from: config.metadataFile)
 
-    guard let (fi, ei) = findEntry(in: doc, url: normalized) else {
+    // Use recursive search to find entries in nested folders
+    guard let location = findEntryRecursive(in: doc, url: normalized) else {
         return Response(id: 0, ok: true, data: nil, error: nil, code: nil)
     }
 
-    doc.folders[fi].entries.remove(at: ei)
+    // Remove entry using recursive helper
+    _ = removeEntryFromFolder(&doc, folderId: location.folderId, entryIndex: location.entryIndex)
     meta.entries.removeValue(forKey: normalized)
 
     do {
@@ -1063,11 +1155,66 @@ func handleDeleteThread(url: String?) -> Response {
     }
 }
 
+func handleRenameThread(url: String?, newTitle: String?) -> Response {
+    guard let url = url, let newTitle = newTitle, let config = Config.read() else {
+        return Response(id: 0, ok: false, data: nil, error: "url and newTitle are required", code: "INVALID_INPUT")
+    }
+
+    let trimmedTitle = newTitle.trimmingCharacters(in: .whitespaces)
+    if trimmedTitle.isEmpty {
+        return Response(id: 0, ok: false, data: nil, error: "Title cannot be empty", code: "INVALID_INPUT")
+    }
+
+    let normalized = normalizeUrl(url)
+    var doc = readDocument(config: config)
+    let meta = Metadata.read(from: config.metadataFile)
+
+    // Use recursive search to find entries in nested folders
+    guard let location = findEntryRecursive(in: doc, url: normalized) else {
+        return Response(id: 0, ok: false, data: nil, error: "Thread not found", code: "NOT_FOUND")
+    }
+
+    // Update the title using recursive helper
+    guard updateEntryTitle(&doc, folderId: location.folderId, entryIndex: location.entryIndex, newTitle: trimmedTitle) else {
+        return Response(id: 0, ok: false, data: nil, error: "Failed to update title", code: "IO_ERROR")
+    }
+
+    do {
+        try writeDocument(doc, config: config)
+
+        // Get updated entry using recursive search
+        guard let entry = getEntryFromFolder(doc, folderId: location.folderId, entryIndex: location.entryIndex) else {
+            return Response(id: 0, ok: false, data: nil, error: "Failed to retrieve updated entry", code: "IO_ERROR")
+        }
+        let thread = entryToThread(entry, folder: location.folderName, metadata: meta)
+
+        return Response(id: 0, ok: true, data: AnyCodable(threadToDict(thread)), error: nil, code: nil)
+    } catch {
+        return Response(id: 0, ok: false, data: nil, error: error.localizedDescription, code: "IO_ERROR")
+    }
+}
+
 // MARK: - Folder Operations
 
 // Helper to count total entries in a folder (including all descendants)
 func countTotalEntries(_ folder: ParsedFolder) -> Int {
     return folder.entries.count + folder.children.reduce(0) { $0 + countTotalEntries($1) }
+}
+
+// Helper to collect all threads from all folders (including nested)
+func collectAllThreads(from folders: [ParsedFolder], metadata: Metadata, threads: inout [[String: Any]]) {
+    for folder in folders {
+        for entry in folder.entries {
+            let thread = entryToThread(entry, folder: folder.name, metadata: metadata)
+            threads.append(threadToDict(thread))
+        }
+        collectAllThreads(from: folder.children, metadata: metadata, threads: &threads)
+    }
+}
+
+// Check if a URL already exists anywhere in the document
+func urlExistsInDocument(_ doc: ParsedDocument, url: String) -> Bool {
+    return findEntryRecursive(in: doc, url: url) != nil
 }
 
 // Helper to convert ParsedFolder to response dictionary
@@ -1638,6 +1785,193 @@ func handleImportBookmarks(bookmarks: [ImportBookmark]?) -> Response {
     }
 }
 
+// MARK: - Repair Bookmarks
+
+func handleRepairBookmarks() -> Response {
+    guard let config = Config.read() else {
+        return Response(id: 0, ok: false, data: nil, error: "Config not found", code: "NO_CONFIG")
+    }
+
+    var doc = readDocument(config: config)
+    var meta = Metadata.read(from: config.metadataFile)
+
+    var stats: [String: Int] = [
+        "urlsNormalized": 0,
+        "duplicatesRemoved": 0,
+        "orphanedMetadataRemoved": 0,
+        "foldersMerged": 0,
+        "emptyFoldersRemoved": 0
+    ]
+
+    // Step 1: Collect all entries, normalize URLs, and find the best version of each
+    // "Best" = most comments, or first seen if equal
+    var bestEntryByUrl: [String: (entry: ParsedEntry, folderPath: String)] = [:]
+
+    func collectEntries(from folders: [ParsedFolder], parentPath: String?) {
+        for folder in folders {
+            let folderPath = folder.path(parentPath: parentPath)
+
+            for entry in folder.entries {
+                let originalUrl = entry.url
+                let normalizedUrl = normalizeUrl(originalUrl)
+
+                var normalizedEntry = entry
+                normalizedEntry.url = normalizedUrl
+
+                // Track if we normalized the URL
+                if originalUrl != normalizedUrl {
+                    stats["urlsNormalized"]! += 1
+
+                    // Migrate metadata to normalized URL
+                    if let entryMeta = meta.entries[originalUrl] {
+                        meta.entries.removeValue(forKey: originalUrl)
+                        if meta.entries[normalizedUrl] == nil {
+                            meta.entries[normalizedUrl] = entryMeta
+                        }
+                    }
+                }
+
+                // Check if we've seen this URL before
+                if let existing = bestEntryByUrl[normalizedUrl] {
+                    // Keep the one with more comments
+                    if normalizedEntry.comments.count > existing.entry.comments.count {
+                        bestEntryByUrl[normalizedUrl] = (normalizedEntry, folderPath)
+                    } else if normalizedEntry.comments.count == existing.entry.comments.count &&
+                              !normalizedEntry.comments.isEmpty {
+                        // Same number of comments - merge them (unique comments only)
+                        var merged = existing.entry
+                        for comment in normalizedEntry.comments {
+                            if !merged.comments.contains(comment) {
+                                merged.comments.append(comment)
+                            }
+                        }
+                        bestEntryByUrl[normalizedUrl] = (merged, existing.folderPath)
+                    }
+                    stats["duplicatesRemoved"]! += 1
+                } else {
+                    bestEntryByUrl[normalizedUrl] = (normalizedEntry, folderPath)
+                }
+            }
+
+            collectEntries(from: folder.children, parentPath: folderPath)
+        }
+    }
+
+    collectEntries(from: doc.folders, parentPath: nil)
+
+    // Step 2: Rebuild entries in each folder, keeping only unique URLs
+    var urlsPlaced = Set<String>()
+
+    func rebuildEntries(_ folder: inout ParsedFolder, parentPath: String?) {
+        let folderPath = folder.path(parentPath: parentPath)
+        var newEntries: [ParsedEntry] = []
+
+        for entry in folder.entries {
+            let normalizedUrl = normalizeUrl(entry.url)
+
+            // Only place this URL if we haven't placed it yet and this is its "home" folder
+            if !urlsPlaced.contains(normalizedUrl),
+               let best = bestEntryByUrl[normalizedUrl],
+               best.folderPath == folderPath {
+                newEntries.append(best.entry)
+                urlsPlaced.insert(normalizedUrl)
+            }
+        }
+
+        folder.entries = newEntries
+
+        let childPath = folder.path(parentPath: parentPath)
+        for i in folder.children.indices {
+            rebuildEntries(&folder.children[i], parentPath: childPath)
+        }
+    }
+
+    for i in doc.folders.indices {
+        rebuildEntries(&doc.folders[i], parentPath: nil)
+    }
+
+    // Step 3: Merge duplicate folders at the same level
+    func mergeDuplicateFolders(_ folders: inout [ParsedFolder], level: Int) {
+        var foldersByName: [String: Int] = [:]
+        var indicesToRemove: [Int] = []
+
+        for i in folders.indices {
+            let name = folders[i].name
+            if let existingIndex = foldersByName[name] {
+                // Merge entries
+                folders[existingIndex].entries.append(contentsOf: folders[i].entries)
+
+                // Merge children with adjusted levels
+                for var child in folders[i].children {
+                    child.level = level + 1
+                    updateLevels(&child, baseLevel: level + 1)
+                    folders[existingIndex].children.append(child)
+                }
+
+                indicesToRemove.append(i)
+                stats["foldersMerged"]! += 1
+            } else {
+                foldersByName[name] = i
+            }
+        }
+
+        // Remove merged folders in reverse order
+        for i in indicesToRemove.reversed() {
+            folders.remove(at: i)
+        }
+
+        // Recursively merge children
+        for i in folders.indices {
+            mergeDuplicateFolders(&folders[i].children, level: level + 1)
+        }
+    }
+
+    mergeDuplicateFolders(&doc.folders, level: 1)
+
+    // Step 4: Remove empty folders (except Uncategorized)
+    func removeEmptyFolders(_ folders: inout [ParsedFolder]) {
+        // First process children recursively
+        for i in folders.indices {
+            removeEmptyFolders(&folders[i].children)
+        }
+
+        // Count empty folders before removal
+        let emptyCount = folders.filter { folder in
+            folder.name != "Uncategorized" && folder.entries.isEmpty && folder.children.isEmpty
+        }.count
+        stats["emptyFoldersRemoved"]! += emptyCount
+
+        // Remove empty folders (except Uncategorized)
+        folders.removeAll { folder in
+            folder.name != "Uncategorized" && folder.entries.isEmpty && folder.children.isEmpty
+        }
+    }
+
+    removeEmptyFolders(&doc.folders)
+
+    // Step 5: Clean up orphaned metadata
+    let validUrls = Set(bestEntryByUrl.keys)
+    let orphanedUrls = Set(meta.entries.keys).subtracting(validUrls)
+    for url in orphanedUrls {
+        meta.entries.removeValue(forKey: url)
+        stats["orphanedMetadataRemoved"]! += 1
+    }
+
+    // Step 6: Ensure Uncategorized exists
+    if !doc.folders.contains(where: { $0.name == "Uncategorized" }) {
+        doc.folders.insert(ParsedFolder(name: "Uncategorized", level: 1, entries: []), at: 0)
+    }
+
+    do {
+        try writeDocument(doc, config: config)
+        try meta.write(to: config.metadataFile)
+
+        return Response(id: 0, ok: true, data: AnyCodable(stats), error: nil, code: nil)
+    } catch {
+        return Response(id: 0, ok: false, data: nil, error: error.localizedDescription, code: "IO_ERROR")
+    }
+}
+
 // MARK: - Message Router
 
 func handleRequest(_ request: Request) -> Response {
@@ -1662,6 +1996,8 @@ func handleRequest(_ request: Request) -> Response {
         response = handleDeleteComment(url: request.url, commentId: request.commentId)
     case "deleteThread":
         response = handleDeleteThread(url: request.url)
+    case "renameThread":
+        response = handleRenameThread(url: request.url, newTitle: request.newTitle)
     case "getFolders":
         response = handleGetFolders()
     case "createFolder":
@@ -1678,6 +2014,8 @@ func handleRequest(_ request: Request) -> Response {
         response = handleReorderFolder(folderId: request.folderId, beforeId: request.beforeId, afterId: request.afterId)
     case "importBookmarks":
         response = handleImportBookmarks(bookmarks: request.bookmarks)
+    case "repairBookmarks":
+        response = handleRepairBookmarks()
     default:
         response = Response(id: 0, ok: false, data: nil, error: "Unknown message type: \(request.type)", code: "UNKNOWN_TYPE")
     }

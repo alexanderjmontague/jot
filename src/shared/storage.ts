@@ -252,6 +252,17 @@ export async function deleteThread(url: string): Promise<void> {
   void clearCachedThread(normalized);
 }
 
+export async function renameThread(url: string, newTitle: string): Promise<ClipThread> {
+  const normalized = normalizeUrl(url);
+  const thread = await sendMessage<ClipThread>({
+    type: 'renameThread',
+    url: normalized,
+    newTitle: newTitle.trim(),
+  });
+  void setCachedThread(normalized, thread);
+  return thread;
+}
+
 export async function deleteComment(url: string, commentId: string): Promise<ClipThread | undefined> {
   const normalized = normalizeUrl(url);
 
@@ -369,4 +380,18 @@ export async function reorderFolder(
   afterId?: string
 ): Promise<Folder[]> {
   return await sendMessage<Folder[]>({ type: 'reorderFolder', folderId, beforeId, afterId });
+}
+
+/**
+ * Repair bookmarks: normalize URLs, remove duplicates, clean orphaned metadata
+ * Returns stats about what was fixed.
+ */
+export async function repairBookmarks(): Promise<{
+  urlsNormalized: number;
+  duplicatesRemoved: number;
+  orphanedMetadataRemoved: number;
+  foldersMerged: number;
+  emptyFoldersRemoved: number;
+}> {
+  return await sendMessage({ type: 'repairBookmarks' });
 }

@@ -337,7 +337,7 @@ function DraggableFolderItem({
         className={`group relative flex w-full min-w-0 items-center gap-2 rounded-[3px] pr-3 py-2 text-sm overflow-hidden ${
           isSelected
             ? 'bg-primary/15 text-foreground'
-            : 'text-foreground/80 hover:bg-accent/40 hover:text-foreground'
+            : 'text-foreground/80 hover:bg-accent hover:text-foreground'
         }`}
         onClick={onSelect}
         {...attributes}
@@ -646,7 +646,7 @@ export function FolderSidebar({
       <TooltipProvider delayDuration={0}>
         <div className="flex items-center h-12 px-3 border-b border-border/50 gap-2">
           {logoSlot}
-          <span className="text-sm font-medium text-foreground/80 flex-1">Collections</span>
+          <div className="flex-1" />
           <Dialog open={createDialogOpen} onOpenChange={(open) => {
             setCreateDialogOpen(open);
             if (!open) setFolderError(null);
@@ -719,7 +719,7 @@ export function FolderSidebar({
             className={`group relative flex w-full items-center gap-2 rounded-[3px] pr-3 py-2 text-sm cursor-pointer overflow-hidden ${
               selectedFolder === null
                 ? 'bg-primary/15 text-foreground'
-                : 'text-foreground/80 hover:bg-accent/40 hover:text-foreground'
+                : 'text-foreground/80 hover:bg-accent hover:text-foreground'
             }`}
             onClick={() => onSelectFolder(null)}
           >
@@ -753,7 +753,7 @@ export function FolderSidebar({
                 className={`group relative flex w-full items-center gap-2 rounded-[3px] pr-3 py-2 text-sm cursor-pointer overflow-hidden ${
                   selectedFolder === 'Uncategorized'
                     ? 'bg-primary/15 text-foreground'
-                    : 'text-foreground/80 hover:bg-accent/40 hover:text-foreground'
+                    : 'text-foreground/80 hover:bg-accent hover:text-foreground'
                 }`}
                 onClick={() => onSelectFolder('Uncategorized')}
               >
@@ -783,7 +783,7 @@ export function FolderSidebar({
               className={`group relative flex w-full items-center gap-2 rounded-[3px] pr-3 py-2 text-sm cursor-pointer overflow-hidden ${
                 selectedFolder === 'Uncategorized'
                   ? 'bg-primary/15 text-foreground'
-                  : 'text-foreground/80 hover:bg-accent/40 hover:text-foreground'
+                  : 'text-foreground/80 hover:bg-accent hover:text-foreground'
               }`}
               onClick={() => onSelectFolder('Uncategorized')}
             >
@@ -830,7 +830,7 @@ export function FolderSidebar({
                   className={`group relative flex w-full items-center gap-2 rounded-[3px] pr-3 py-2 text-sm cursor-pointer overflow-hidden ${
                     selectedFolder === folder.name
                       ? 'bg-primary/15 text-foreground'
-                      : 'text-foreground/80 hover:bg-accent/40 hover:text-foreground'
+                      : 'text-foreground/80 hover:bg-accent hover:text-foreground'
                   }`}
                   onClick={() => onSelectFolder(folder.name)}
                 >

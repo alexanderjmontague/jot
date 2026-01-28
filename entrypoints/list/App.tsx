@@ -20,6 +20,7 @@ import {
   appendComment,
   deleteComment,
   deleteThread,
+  renameThread,
   getAllThreads,
   isHostInstalled,
   isHostConfigured,
@@ -45,10 +46,11 @@ import {
 } from '../../src/components/ui/dropdown-menu';
 import { DownloadHelperView } from '../../src/shared/components/DownloadHelperView';
 import { ImportBookmarksView } from '../../src/shared/components/ImportBookmarksView';
+import { AgentInstructionsView } from '../../src/shared/components/AgentInstructionsView';
 import { flattenChromeBookmarks, type ChromeBookmarkNode } from '../../src/shared/bookmarks';
 import { formatAbsolute, formatRelativeOrAbsolute } from '../../src/shared/datetime';
 import { formatDisplayUrl, stripWwwPrefix, getBaseDomainInfo } from '../../src/shared/url';
-import { Loader2, RefreshCw, Settings, CheckCircle2, AlertCircle, Globe, AlertTriangle, Github, GripVertical, MessageSquarePlus } from 'lucide-react';
+import { Loader2, RefreshCw, Settings, CheckCircle2, AlertCircle, Globe, AlertTriangle, Github, GripVertical, MessageSquarePlus, Copy, Check, MoreHorizontal } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -66,7 +68,7 @@ type FaviconFailures = Record<string, true>;
 type PreviewFailures = Record<string, true>;
 type PreviewFit = 'cover' | 'contain';
 type PreviewFits = Record<string, PreviewFit>;
-type AppState = 'loading' | 'not-installed' | 'setup' | 'import-prompt' | 'ready' | 'error';
+type AppState = 'loading' | 'not-installed' | 'setup' | 'agent-instructions' | 'import-prompt' | 'ready' | 'error';
 
 
 const PREVIEW_FRAME_ASPECT = 1.2;
@@ -316,6 +318,7 @@ type ImportStatus = 'idle' | 'confirming' | 'importing' | 'done' | 'error';
 function SettingsDialog() {
   const [open, setOpen] = useState(false);
   const [fullPath, setFullPath] = useState('');
+  const [originalPath, setOriginalPath] = useState('');
   const [status, setStatus] = useState<SettingsStatus>('idle');
   const [error, setError] = useState<string | null>(null);
   const [updateAvailable, setUpdateAvailable] = useState(false);
@@ -326,6 +329,30 @@ function SettingsDialog() {
   const [importBookmarksList, setImportBookmarksList] = useState<ImportBookmark[]>([]);
   const [importResult, setImportResult] = useState<{ imported: number; skipped: number } | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const getAgentInstructions = () => {
+    if (!fullPath) return '';
+    return `## Jot Bookmarks
+
+Bookmarks are stored at: \`${fullPath}/bookmarks.md\`
+
+To search bookmarks: \`grep -i "keyword" "${fullPath}/bookmarks.md"\`
+
+Format: Folders are markdown headings (## Folder), bookmarks are \`- **[Title](url)** — Date\`, comments are \`  > text\`.`;
+  };
+
+  const handleCopyInstructions = async () => {
+    const instructions = getAgentInstructions();
+    if (!instructions) return;
+    try {
+      await navigator.clipboard.writeText(instructions);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy', err);
+    }
+  };
 
   const loadConfig = async () => {
     setStatus('loading');
@@ -336,6 +363,7 @@ function SettingsDialog() {
         // Combine vaultPath and commentFolder into single path
         const combined = config.vaultPath.replace(/\/+$/, '') + '/' + config.commentFolder;
         setFullPath(combined);
+        setOriginalPath(combined);
       }
       setStatus('idle');
     } catch (err) {
@@ -403,13 +431,9 @@ function SettingsDialog() {
 
     try {
       await setVaultPath(vaultPath, commentFolder);
+      setOriginalPath(cleanPath);
       setStatus('success');
-
-      // Brief delay to show success state, then close
-      setTimeout(() => {
-        setOpen(false);
-        setStatus('idle');
-      }, 500);
+      // Don't auto-close - let user copy the updated instructions
     } catch (err) {
       setStatus('error');
       const message = err instanceof Error ? err.message : 'Failed to save settings';
@@ -423,7 +447,7 @@ function SettingsDialog() {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && status !== 'saving' && status !== 'loading') {
+    if (e.key === 'Enter' && status !== 'saving' && status !== 'loading' && fullPath.trim() !== originalPath) {
       void handleSave();
     }
   };
@@ -501,7 +525,7 @@ function SettingsDialog() {
               <div className="space-y-2">
                 <Label htmlFor="settings-full-path">Folder Path</Label>
                 <p className="text-xs text-muted-foreground">
-                  The folder where your comments are saved.
+                  The folder where your bookmarks are saved.
                 </p>
                 <Input
                   id="settings-full-path"
@@ -517,6 +541,32 @@ function SettingsDialog() {
                   <AlertTriangle className="size-3.5 shrink-0 mt-0.5" />
                   <span>Changing this doesn't move the existing folder. Move it first, then update the path here.</span>
                 </p>
+
+                {/* AI Agent Instructions */}
+                <div className="pt-2 space-y-1.5">
+                  <p className="text-xs text-muted-foreground">
+                    Add to your CLAUDE.md so AI can find your bookmarks:
+                  </p>
+                  <div className="relative">
+                    <pre className="rounded-md bg-muted p-3 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all">
+                      {getAgentInstructions() || 'Set a folder path above to generate instructions.'}
+                    </pre>
+                    {fullPath && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="absolute top-2 right-2 h-7 w-7"
+                        onClick={handleCopyInstructions}
+                      >
+                        {copied ? (
+                          <Check className="h-3.5 w-3.5 text-green-500" />
+                        ) : (
+                          <Copy className="h-3.5 w-3.5" />
+                        )}
+                      </Button>
+                    )}
+                  </div>
+                </div>
               </div>
 
               {error && (
@@ -527,15 +577,20 @@ function SettingsDialog() {
               )}
 
               {status === 'success' && (
-                <div className="flex items-center gap-2 rounded-md bg-green-500/10 p-3 text-sm text-green-600">
-                  <CheckCircle2 className="h-4 w-4" />
-                  <span>Settings saved!</span>
+                <div className="rounded-md bg-green-500/10 p-3 text-sm text-green-600 space-y-1">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="h-4 w-4 shrink-0" />
+                    <span>Settings saved!</span>
+                  </div>
+                  <p className="text-xs text-green-600/80 pl-6">
+                    Remember to update the path in your CLAUDE.md or agent config.
+                  </p>
                 </div>
               )}
 
               <Button
                 onClick={handleSave}
-                disabled={status === 'saving' || status === 'success'}
+                disabled={status === 'saving' || status === 'success' || fullPath.trim() === originalPath}
                 className="w-full"
               >
                 {status === 'saving' ? (
@@ -562,6 +617,7 @@ function SettingsDialog() {
                     className="w-full"
                     onClick={handleImportClick}
                   >
+                    <img src="/chromium.png" alt="" className="h-4 w-4 mr-2" />
                     Import Chrome Bookmarks
                   </Button>
                 )}
@@ -681,6 +737,9 @@ function ListApp() {
   const [commentDialogUrl, setCommentDialogUrl] = useState<string | null>(null);
   const [commentDraft, setCommentDraft] = useState('');
   const [commentSaving, setCommentSaving] = useState(false);
+
+  // Rename state
+  const [renamingThreadUrl, setRenamingThreadUrl] = useState<string | null>(null);
 
   // Track actual pointer position via pointermove during drag (more accurate than delta calculation)
   useEffect(() => {
@@ -1055,6 +1114,20 @@ function ListApp() {
     }
   };
 
+  const handleRenameThread = async (url: string, newTitle: string) => {
+    const trimmed = newTitle.trim();
+    if (!trimmed) return;
+
+    try {
+      const updatedThread = await renameThread(url, trimmed);
+      replaceThread(updatedThread);
+      setErrorForThread(url, null);
+    } catch (err) {
+      console.error('Failed to rename thread', err);
+      setErrorForThread(url, 'Failed to rename bookmark.');
+    }
+  };
+
   const handleAddComment = useCallback(async (url: string) => {
     const trimmed = commentDraft.trim();
     if (!trimmed) return;
@@ -1111,7 +1184,7 @@ function ListApp() {
     <button
       type="button"
       onClick={() => setSelectedFolder(null)}
-      className="flex items-center shrink-0 rounded-md hover:bg-accent/50 transition-colors"
+      className="flex items-center gap-2 shrink-0 rounded-md hover:bg-accent/50 transition-colors"
     >
       <img
         src="/logo.svg"
@@ -1120,6 +1193,7 @@ function ListApp() {
         style={{ width: 28, height: 28 }}
         draggable={false}
       />
+      <span className="text-sm font-medium text-foreground/80">Jot</span>
     </button>
   );
 
@@ -1154,7 +1228,7 @@ function ListApp() {
           {/* Right column: nav bar + main content */}
           <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
             {/* Top navbar (no logo) */}
-            <nav className="shrink-0 flex w-full items-center gap-4 h-12 border-b border-border bg-background px-3">
+            <nav className="shrink-0 flex w-full items-center gap-4 h-12 border-b border-border bg-background px-6">
               {/* Search bar */}
               <div className={`flex flex-1 items-center gap-2 px-1 py-1 text-muted-foreground transition-all border-b ${searchTerm ? 'border-border/60' : 'border-transparent'} hover:border-border/40 focus-within:border-border`}>
                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-muted-foreground/40">
@@ -1193,12 +1267,12 @@ function ListApp() {
 
             {/* Scrollable content */}
             <div className="flex-1 min-h-0 overflow-auto">
-              <div className="w-full px-6 py-6">
+              <div className="w-full px-6 pt-3 pb-6">
                 {loading ? <p className="text-sm text-muted-foreground">Loading comments...</p> : null}
 
                 {/* Domain filters - visible if any domain has multiple threads globally */}
                 {showDomainFilter && (
-                  <div className="flex items-center gap-1.5 flex-wrap mt-2 mb-3">
+                  <div className="flex items-center gap-1.5 flex-wrap mb-1">
                     {filters.map((option) => (
                       <button
                         key={option.id}
@@ -1215,8 +1289,8 @@ function ListApp() {
                   </div>
                 )}
 
-                <div className="pb-6">
-              {showEmptyState ? (
+                <div key={selectedFolder ?? 'all'}>
+                  {showEmptyState ? (
                 <div className="flex h-full min-h-[240px] flex-col items-center justify-center gap-2 rounded-lg px-6 py-16 text-center text-muted-foreground">
                   <h2 className="text-lg font-semibold text-muted-foreground">{emptyStateContent.title}</h2>
                   <p className="text-sm">{emptyStateContent.description}</p>
@@ -1287,30 +1361,69 @@ function ListApp() {
                           <div className="flex min-w-0 flex-1 flex-col gap-3 overflow-hidden">
                             <div className="flex min-w-0 items-start justify-between gap-3 overflow-hidden">
                               <div className="flex w-0 min-w-0 flex-1 flex-col gap-1 overflow-hidden">
+                                {renamingThreadUrl === thread.url ? (
+                                  <div className="flex min-w-0 items-center gap-2 overflow-hidden">
+                                    {showFavicon ? (
+                                      <img
+                                        src={thread.faviconUrl ?? undefined}
+                                        alt=""
+                                        className="size-4 shrink-0"
+                                        onError={() => handleFaviconError(thread.url)}
+                                        referrerPolicy="no-referrer"
+                                      />
+                                    ) : (
+                                      <LinkIcon className="size-4 shrink-0 text-muted-foreground" />
+                                    )}
+                                    <input
+                                      autoFocus
+                                      defaultValue={displayTitle}
+                                      className="min-w-0 w-full truncate text-sm font-semibold bg-transparent border-b border-primary outline-none text-foreground"
+                                      onBlur={(e) => {
+                                        handleRenameThread(thread.url, e.target.value);
+                                        setRenamingThreadUrl(null);
+                                      }}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                          handleRenameThread(thread.url, e.currentTarget.value);
+                                          setRenamingThreadUrl(null);
+                                        } else if (e.key === 'Escape') {
+                                          setRenamingThreadUrl(null);
+                                        }
+                                      }}
+                                    />
+                                  </div>
+                                ) : (
+                                  <a
+                                    href={thread.url}
+                                    className="flex min-w-0 items-center gap-2 overflow-hidden text-sm font-semibold text-foreground hover:text-primary"
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    {showFavicon ? (
+                                      <img
+                                        src={thread.faviconUrl ?? undefined}
+                                        alt=""
+                                        className="size-4 shrink-0"
+                                        onError={() => handleFaviconError(thread.url)}
+                                        referrerPolicy="no-referrer"
+                                      />
+                                    ) : (
+                                      <LinkIcon className="size-4 shrink-0 text-muted-foreground" />
+                                    )}
+                                    <span className="min-w-0 flex-1 truncate" title={displayTitle}>
+                                      {displayTitle}
+                                    </span>
+                                  </a>
+                                )}
                                 <a
                                   href={thread.url}
-                                  className="flex min-w-0 items-center gap-2 overflow-hidden text-sm font-semibold text-foreground hover:text-primary"
+                                  className="min-w-0 truncate text-sm font-normal text-muted-foreground hover:text-primary"
                                   target="_blank"
                                   rel="noreferrer"
+                                  title={displayUrl}
                                 >
-                                  {showFavicon ? (
-                                    <img
-                                      src={thread.faviconUrl ?? undefined}
-                                      alt=""
-                                      className="size-4 shrink-0"
-                                      onError={() => handleFaviconError(thread.url)}
-                                      referrerPolicy="no-referrer"
-                                    />
-                                  ) : (
-                                    <LinkIcon className="size-4 shrink-0 text-muted-foreground" />
-                                  )}
-                                  <span className="min-w-0 flex-1 truncate" title={displayUrl}>
-                                    {displayUrl}
-                                  </span>
+                                  {displayUrl}
                                 </a>
-                                <div className="min-w-0 truncate text-sm font-normal text-muted-foreground" title={displayTitle}>
-                                  {displayTitle}
-                                </div>
                               </div>
                               <Tooltip>
                                 <TooltipTrigger asChild>
@@ -1331,22 +1444,29 @@ function ListApp() {
                                   <p>Add comment</p>
                                 </TooltipContent>
                               </Tooltip>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
                                   <Button
                                     variant="ghost"
                                     size="icon"
-                                    className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
-                                    aria-label="Delete all comments for this page"
+                                    className="h-8 w-8 shrink-0 text-muted-foreground"
+                                    aria-label="More options"
+                                  >
+                                    <MoreHorizontal className="size-4" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end" className="min-w-[120px]">
+                                  <DropdownMenuItem onClick={() => setRenamingThreadUrl(thread.url)}>
+                                    Rename
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    className="text-destructive focus:text-destructive"
                                     onClick={() => handleDeleteThread(thread.url)}
                                   >
-                                    <TrashIcon className="size-4" />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>
-                                  <p>Delete all</p>
-                                </TooltipContent>
-                              </Tooltip>
+                                    Delete
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
                             </div>
                             {thread.comments.length > 0 && (
                               <div className="space-y-2">
@@ -1440,6 +1560,7 @@ function App() {
   useColorScheme();
   const [appState, setAppState] = useState<AppState>('loading');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [configuredFolderPath, setConfiguredFolderPath] = useState<string>('');
 
   const checkSetup = async () => {
     setAppState('loading');
@@ -1503,9 +1624,33 @@ function App() {
   }
 
   if (appState === 'setup') {
+    const handleSetupComplete = async () => {
+      try {
+        const config = await getConfig();
+        if (config) {
+          const fullPath = config.vaultPath.replace(/\/+$/, '') + '/' + config.commentFolder;
+          setConfiguredFolderPath(fullPath);
+        }
+      } catch (err) {
+        console.error('Failed to get config after setup', err);
+      }
+      setAppState('agent-instructions');
+    };
+
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
-        <SetupView onComplete={() => setAppState('import-prompt')} />
+        <SetupView onComplete={handleSetupComplete} />
+      </div>
+    );
+  }
+
+  if (appState === 'agent-instructions') {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <AgentInstructionsView
+          folderPath={configuredFolderPath}
+          onComplete={() => setAppState('import-prompt')}
+        />
       </div>
     );
   }
