@@ -8,6 +8,9 @@
 
 <p align="center"><a href="https://github.com/alexanderjmontague/jot/releases/latest"><strong>→ Download Latest Release</strong></a></p>
 
+> [!WARNING]
+> Not yet on the Chrome Web Store. Requires "Load unpacked" installation.
+
 ---
 
 ### Let Jot write bookmarks to a local folder
