@@ -4,8 +4,6 @@
 
 <h1 align="center">Jot</h1>
 
-<p align="center"><strong>Leave notes on any webpage.</strong></p>
-
 <p align="center">Modern bookmarks, captured locally – for you and Claude Code</p>
 
 <p align="center"><a href="https://github.com/alexanderjmontague/jot/releases/latest"><strong>→ Download Latest Release</strong></a></p>
@@ -34,7 +32,7 @@
 
 ## What is this?
 
-Ever read something online and want to jot down a quick thought? Jot lets you do exactly that — click the icon, type your comment, and it's saved as a markdown file in your Obsidian vault.
+Capture your thoughts and ideas on any webpage to help you organize and contextualize the internet. Read them later yourself, or use local agents like Claude Code and Codex to quickly find your bookmarks, reference your notes, and organize them into folders.
 
 Your notes stay local. The extension talks directly to your filesystem through a tiny helper app (no servers, no sync, no BS).
 
@@ -112,6 +110,3 @@ rm ~/Library/Application\ Support/BraveSoftware/Brave-Browser/NativeMessagingHos
 rm -rf ~/.jot
 ```
 
----
-
-**Made for people who think while they browse.**
