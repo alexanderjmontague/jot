@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="public/logo.svg" width="80" height="80" alt="Jot">
+  <img src="public/logo.svg" width="80" height="56" alt="Jot">
 </p>
 
 <h1 align="center">Jot</h1>
@@ -10,7 +10,25 @@
 
 <p align="center"><a href="https://github.com/alexanderjmontague/jot/releases/latest"><strong>→ Download Latest Release</strong></a></p>
 
-<!-- TODO: Add screenshot/gif here -->
+---
+
+### Let Jot write bookmarks to a local folder
+
+<p align="center">
+  <img src="folder_path.png" width="400" alt="Folder path setting">
+</p>
+
+### Add notes & comments on any webpage
+
+<p align="center">
+  <img src="add_comment.gif" width="600" alt="Adding a comment">
+</p>
+
+### Let Claude Code see and organize them locally
+
+<p align="center">
+  <img src="claude_code.gif" width="600" alt="Claude Code organizing bookmarks">
+</p>
 
 ---
 
